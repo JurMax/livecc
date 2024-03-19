@@ -1,10 +1,10 @@
-pkgname=live_cc
+pkgname=livecc
 pkgver=0.1
 pkgrel=1
-pkgdesc="Automatic live reload for C++."
+pkgdesc="Automatic live reload for C/C++."
 arch=('x86_64')
-url=""
-provides=('live_cc')
+url="https://github.com/JurMax/live_cc/"
+provides=('livecc')
 sha256sums=()
 
 build() {
@@ -14,5 +14,5 @@ build() {
 
 
 package() {
-    install -Dm755 ../live_cc "$pkgdir/usr/bin/live_cc"
+    install -Dm755 ../livecc "$pkgdir/usr/bin/livecc"
 }
