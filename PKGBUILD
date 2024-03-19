@@ -3,7 +3,7 @@ pkgver=0.1
 pkgrel=1
 pkgdesc="Automatic live reload for C/C++."
 arch=('x86_64')
-url="https://github.com/JurMax/live_cc/"
+url="https://github.com/JurMax/livecc/"
 provides=('livecc')
 sha256sums=()
 
