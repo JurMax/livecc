@@ -11,12 +11,18 @@
 
 #include "plthook/plthook_elf.c"
 
+#include <algorithm>
 #include <iostream>
 #include <dlfcn.h>
 #include <filesystem>
+#include <string_view>
 #include <vector>
 #include <fstream>
 #include <thread>
+#include <map>
+#include <unordered_map>
+#include <set>
+
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -36,26 +42,37 @@
 namespace fs = std::filesystem;
 
 enum build_type_t {
-    LIVE,       // Build and run as a live application.
-    EXECUTABLE, // Build as an standalone executable.
-    SHARED      // Build as an optimized shared library.
+    LIVE,         // Build and run as a live application.
+    SHARED,       // Build as an optimized shared library.
+    EXECUTABLE,   // Build as an standalone executable.
+    DEPENDENCIES, // Build only the .d files.
+    CLEAN         // Delete all the build files.
 };
 
 struct dll_t {
-    link_map* handle;
-    plthook_t* plthook;
-
+    fs::path working_directory;
     fs::path output_file;
     fs::path output_directory;
 
     std::string build_command;
-
-    std::vector<void*> loaded_handles;
-    std::vector<fs::path> temporary_files;
-
     build_type_t build_type = LIVE;
     bool include_source_parent_dir = true;
     bool rebuild_with_O0 = true;
+
+    // Runtime.
+    link_map* handle;
+    plthook_t* plthook;
+    std::vector<void*> loaded_handles;
+    std::vector<fs::path> temporary_files;
+
+    // Reusable array.
+    std::vector<char> string_builder;
+};
+
+struct init_data_t {
+    // Store the library header file file times here, so we
+    // don't have to keep checking them for changes.
+    std::unordered_map<fs::path, fs::file_time_type> library_changes;
 };
 
 struct source_file_t {
@@ -63,92 +80,121 @@ struct source_file_t {
 
     fs::path source_path;
     fs::path compiled_path;
+    bool is_pch_header = false;
+
+    fs::file_time_type last_edit_time;
+    std::vector<fs::path> dependency_paths;
 
     fs::path latest_dll;
-    fs::file_time_type last_edit_time;
-
-    std::vector<fs::path> dependency_paths;
-    fs::file_time_type latest_dependency_time;
-
     FILE* compilation_process = nullptr;
 
-    source_file_t( const std::string_view& path, dll_t& dll )
-        : source_path(path), dll(dll) {}
+    source_file_t(dll_t& dll, const std::string_view& path, bool is_pch_header = false)
+        : dll(dll), source_path(path), is_pch_header(is_pch_header) {}
 
     // Returns true if it must be compiled.
-    bool initialise() {
+    void set_paths() {
         compiled_path = (dll.output_directory / source_path);
-        if (dll.build_type == LIVE) compiled_path.replace_extension(".lo");
-        else if (dll.build_type == EXECUTABLE) compiled_path.replace_extension(".o");
-        else if (dll.build_type == SHARED) compiled_path.replace_extension(".so");
+        std::string extension;
+        if (dll.build_type == LIVE) extension = ".lo";
+        else if (dll.build_type == SHARED) extension = ".so";
+        else /* if (dll.build_type == EXECUTABLE) */ extension = ".o";
 
-        if (fs::exists(compiled_path)) {
-            last_edit_time = fs::last_write_time(compiled_path);
-            return load_dependencies(true);
-        }
-        else {
-            last_edit_time = fs::last_write_time(source_path);
-            return true;
+        if (is_pch_header)
+            compiled_path.replace_extension(extension + ".h.gch");
+        else
+            compiled_path.replace_extension(extension);
+    }
+
+    bool initialise(init_data_t* init_data = nullptr) {
+        set_paths();
+
+        if (init_data != nullptr) {
+            if (fs::exists(compiled_path)) {
+                last_edit_time = fs::last_write_time(compiled_path);
+                return load_dependencies(init_data);
+            }
+            else {
+                last_edit_time = fs::last_write_time(source_path);
+                return true;
+            }
         }
 
         return false;
     }
 
-    bool load_dependencies(bool initialise = false) {
+    bool load_dependencies(init_data_t* init_data = nullptr) {
         dependency_paths.clear();
         std::ifstream f(fs::path(compiled_path).replace_extension(".d"));
-        std::string s;
 
         bool changed = false;
         if (f.is_open()) {
-            while (std::getline(f, s, ' ')) {
-                if (s[0] == '\\' || s.find(':') != std::string::npos)
-                    continue;
+            std::vector<char>& str = dll.string_builder;
+            bool is_good;
+            do {
+                is_good = f.good();
+                char c;
+                if (!is_good || (c = f.get()) == ' ' || c == '\n' || c == EOF) {
+                    // End of file, so push it.
+                    if (str.size() == 0)
+                        continue;
 
-                if (s[0] == '/') {
-                    // TODO: Create a map of the filetimes, so things don't get checked
-                    // more than once during startup.
+                    fs::path s = fs::canonical(std::string_view{&str[0], str.size()});
 
-                    // Check if any library files have changed.
-                    if (initialise)
-                        changed = changed || check_if_changed(s);
+                    // While initialising, check if any file has changed. We
+                    // use a map for efficiency.
+                    if (init_data != nullptr) {
+                        auto it = init_data->library_changes.find(s);
+                        if (it == init_data->library_changes.end())
+                            it = init_data->library_changes.emplace_hint(it, s, fs::last_write_time(s));
+
+                        if (it->second > last_edit_time) {
+                            last_edit_time = it->second;
+                            changed = true;
+                        }
+                    }
+
+                    if (str[0] != '/') {
+                        // Is a relative path so add it to the dependencies.
+                        dependency_paths.emplace_back(fs::relative(s, dll.working_directory));
+                    }
+
+                    str.clear();
                 }
-                else {
-                    // Is a relative path so add it to the dependencies.
-                    dependency_paths.push_back(s);
+                else if (c == '\\') {
+                    char d = f.get();
+                    if (d == ' ')
+                        str.push_back(' ');
                 }
-            }
+                else if (c == ':')
+                    str.clear();
+                else
+                    str.push_back(c);
+            } while (is_good);
         }
 
         // Add the source file if no .d file was found.
         if (dependency_paths.empty())
-            dependency_paths.push_back(source_path);
+            dependency_paths.emplace_back(source_path);
 
-        if (initialise)
-            return was_changed() || changed;
-        return false;
-    }
-
-    bool check_if_changed(const fs::path& p) {
-        try {
-            fs::file_time_type new_write_time = fs::last_write_time(p);
-            if (new_write_time > last_edit_time) {
-                // std::cout << "Changed! " << p << std::endl;
-                last_edit_time = new_write_time;
-                return true;
-            }
-        }
-        catch (const fs::filesystem_error&) {
-            return true;
-        }
-
-        return false;
+        return changed;
     }
 
     bool was_changed() {
         bool changed = false;
-        for (const fs::path& p : dependency_paths)
-            changed = check_if_changed(p) || changed;
+        for (const fs::path& p : dependency_paths) {
+            try {
+                fs::file_time_type new_write_time = fs::last_write_time(p);
+                if (new_write_time > last_edit_time) {
+                    std::cout << p << " changed!\n";
+                    last_edit_time = new_write_time;
+                    changed = true;
+                    return true;
+                }
+            }
+            catch (const fs::filesystem_error&) {
+                changed = true;
+            }
+        }
         return changed;
     }
 
@@ -156,18 +202,12 @@ struct source_file_t {
         // Make sure the previous compilation process is done.
         end_compile_process();
 
-        fs::path output_path;
-
-        if (initialise) {
-            output_path = compiled_path;
-            std::cout << "Compiling " << source_path << std::endl;
-        }
-        else {
-            output_path = dll.output_directory / "tmp"
+        bool create_temporary_object = !initialise && !is_pch_header;
+        fs::path output_path = !create_temporary_object ? compiled_path
+            : dll.output_directory / "tmp"
                 / ("tmp" + (std::to_string(dll.temporary_files.size()) + ".so"));
-            std::cout << "Compiling " << source_path << " to " << output_path << std::endl;
-        }
 
+        std::cout << "Compiling " << source_path << " to " << output_path << std::endl;
         fs::create_directories(output_path.parent_path());
 
         std::string command = dll.build_command;
@@ -177,15 +217,23 @@ struct source_file_t {
             else
                 command += " -I.";
         }
+
+        if (is_pch_header)
+            command += " -c -x c++-header ";
+        else if (initialise)
+            command += " -c ";
+        else if (dll.rebuild_with_O0)
+            command += " -O0 ";
+
         command += " -o " + output_path.string();
         command += " " + source_path.string();
 
-        if (initialise)
-            command += " -c ";
-        if (!initialise && !dll.rebuild_with_O0)
-            command += " -O0 ";
+        // Create a fake header file so we can include the pch later.
+        if (is_pch_header) {
+            fs::copy(source_path, fs::path(compiled_path).replace_extension(),
+                fs::copy_options::overwrite_existing);
+        }
 
-        // std::cout << "Running: " << command << std::endl;
         compilation_process = popen(command.c_str(), "r");
         latest_dll = output_path;
         if (!initialise) {
@@ -194,7 +242,7 @@ struct source_file_t {
     }
 
     // Returns true when there is an error.
-    bool end_compile_process() {
+    bool end_compile_process(init_data_t* init_data = nullptr) {
         if (compilation_process == nullptr)
             return false;
 
@@ -206,12 +254,13 @@ struct source_file_t {
             return true;
         }
         else {
-            load_dependencies();
+            // A new .d file has been created, so load its dependencies again.
+            load_dependencies(init_data);
             return false;
         }
     }
 
-    void replaceFunctions() {
+    void replace_functions() {
         link_map* handle = (link_map*)dlopen(latest_dll.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
         if (handle == nullptr) {
             std::cout << "Error loading " << latest_dll << std::endl;
@@ -261,110 +310,145 @@ struct source_file_t {
 typedef void dll_callback_func_t(void);
 typedef int set_callback_func_t(dll_callback_func_t*);
 
+
 struct live_cc_t {
     dll_t dll;
 
     size_t path_index = 0;
+
     std::vector<source_file_t> files;
 
     void parse_arguments(int argn, char** argv) {
+        dll.working_directory = fs::current_path();
         dll.output_file = "build/a.out";
         std::ostringstream build_command;
         build_command << "gcc ";
 
-        bool is_input = true;
-        bool is_output = false;
+        enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
+
         for (int i = 1; i < argn; ++i) {
             std::string_view arg(argv[i]);
 
             if (arg[0] == '-') {
-                // Get the output file.
-                if (arg.length() >= 2 && arg[1] == 'o') {
+                if (arg.starts_with("-o")) {
+                    // Get the output file.
                     if (arg.length() == 2)
-                        is_output = true;
+                        next_arg_type = OUTPUT;
                     else
                         dll.output_file = arg.substr(2);
-                    continue;
                 }
-                else if (arg == "--executable") {
+                else if (arg.starts_with("--pch")) {
+                    if (arg.length() == 5)
+                        next_arg_type = PCH;
+                    else
+                        files.emplace_back(dll, arg, true);
+                }
+                else if (arg == "--executable")
                     dll.build_type = EXECUTABLE;
-                    continue;
-                }
-                else if (arg == "--shared") {
+                else if (arg == "--shared")
                     dll.build_type = SHARED;
-                    continue;
-                }
-                else if (arg == "--no-rebuild-with-O0") {
+                else if (arg == "--no-rebuild-with-O0")
                     dll.rebuild_with_O0 = false;
-                    continue;
+                else if (arg == "--clean")
+                    dll.build_type = CLEAN;
+                else {
+                    build_command << ' ' << arg;
+
+                    // The next argument is part of this flag, so it's not a file.
+                    // TODO: handle all the arguments in which you specify an option.
+                    // like: -MD, --param, etc.
+                    if (arg.length() == 2
+                        || (arg.starts_with("-include") && arg.size() == 8))
+                        next_arg_type = FLAG;
                 }
-
-                build_command << ' ' << arg;
-
-                // The next argument is part of this flag, so it's not a file.
-                if (arg.length() == 2)
-                    is_input = false;
-
-            }
-            else if (is_output) {
-                dll.output_file = arg;
-                is_output = false;
-                is_input = true;
-            }
-            else if (is_input) {
-                files.emplace_back(arg, dll);
             }
             else {
-                build_command << ' ' << arg;
-                is_input = true;
+                if (next_arg_type == INPUT)
+                    files.emplace_back(dll, arg);
+                else if (next_arg_type == PCH)
+                    files.emplace_back(dll, arg, true);
+                else if (next_arg_type == OUTPUT)
+                    dll.output_file = arg;
+                else
+                    build_command << ' ' << arg;
+                next_arg_type = INPUT;
             }
         }
 
         if (dll.build_type == LIVE || dll.build_type == SHARED)
-            build_command << " -shared";
+            build_command << " -shared -fPIC";
         if (dll.build_type == LIVE)
-            build_command << " -fPIC -fno-inline -fno-ipa-sra";
-        dll.build_command = build_command.str();
+            build_command << " -fno-inline -fno-ipa-sra";
+        build_command << " -MD -Winvalid-pch";
+
         dll.output_directory = dll.output_file.parent_path();
+        dll.build_command = build_command.str();
+    }
+
+    bool compile_files(const std::vector<source_file_t*>& to_compile, init_data_t* init_data) {
+        bool success = true;
+        if (to_compile.size() > 0) {
+            int processor_count = std::max(1, (int)std::thread::hardware_concurrency() - 1);
+            for (int started_i = 0, i = -processor_count; i < (int)to_compile.size(); ++i) {
+                if (i >= 0 && to_compile[i]->end_compile_process(init_data))
+                    success = false;
+                if (success && started_i < (int)to_compile.size())
+                    to_compile[started_i++]->start_compile_process(true);
+            }
+        }
+
+        return success;
     }
 
     bool compile_and_link() {
         // Make sure all the files are compiled.
-        std::vector<source_file_t> to_compile;
-        for (source_file_t& file : files) {
-            if (file.initialise())
-                to_compile.push_back(file);
+        bool did_compilation = false;
+        {
+            std::vector<source_file_t*> headers_to_compile;
+            std::vector<source_file_t*> sources_to_compile;
+            init_data_t init_data;
+
+            for (source_file_t& file : files) {
+                if (file.initialise(&init_data)) {
+                    did_compilation = true;
+                    (file.is_pch_header ? headers_to_compile : sources_to_compile)
+                        .push_back(&file);
+                }
+            }
+
+            // Compile all the pch headers.
+            if (!compile_files(headers_to_compile, &init_data))
+                return false;
+
+            // Add the PCH files to the build command. TODO: do this more efficiently.
+            for (source_file_t& file : files)
+                if (file.is_pch_header)
+                    dll.build_command += " -include " + fs::path(file.compiled_path).replace_extension().string();
+
+            // Build all the source files.
+            if (!compile_files(sources_to_compile, &init_data))
+                return false;
         }
 
-        int processor_count = std::max(1, (int)std::thread::hardware_concurrency() - 1);
-
-        // Compile all the programs
-        bool success = true;
-        for (int started_i = 0, i = -processor_count; i < (int)to_compile.size(); ++i) {
-            if (i >= 0 && to_compile[i].end_compile_process())
-                success = false;
-            if (success && started_i < (int)to_compile.size())
-                to_compile[started_i++].start_compile_process(true);
-        }
-
-        if (success == false) {
-            return false;
-        }
+        bool link = did_compilation || !fs::exists(dll.output_file);
 
         // link all the files into one shared library.
-        std::ostringstream link_command;
-        link_command << dll.build_command;
-        link_command << " -o " << dll.output_file;
-        for (source_file_t& file : files)
-            link_command << ' ' << file.compiled_path;
-        std::cout << "Linking sources together..." << std::endl;
-        if (int err = system(link_command.str().c_str())) {
-            std::cout << "Error linking to " << dll.output_file << ": " << err << std::endl;
-            return false;
+        if (link) {
+            std::ostringstream link_command;
+            link_command << dll.build_command;
+            link_command << " -o " << dll.output_file;
+            for (source_file_t& file : files)
+                if (!file.is_pch_header)
+                    link_command << ' ' << file.compiled_path;
+
+            std::cout << "Linking sources together..." << std::endl;
+            if (int err = system(link_command.str().c_str())) {
+                std::cout << "Error linking to " << dll.output_file << ": " << err << std::endl;
+                return false;
+            }
         }
-        else {
-            return true;
-        }
+
+        return true;
     }
 
     void start( dll_callback_func_t* callback_func ) {
@@ -419,8 +503,33 @@ struct live_cc_t {
         if (file.was_changed()) {
             file.start_compile_process();
             file.end_compile_process();
-            file.replaceFunctions();
+            file.replace_functions();
         }
+    }
+
+    void clean() {
+        std::cout << "Cleaning all files" << std::endl;
+        constexpr const char* extensions[] = { ".o", ".lo", "so" };
+        for (source_file_t& file : files) {
+            file.initialise();
+            if (file.is_pch_header) {
+                std::string path = file.compiled_path
+                    .replace_extension()/*.gch*/.replace_extension()/*.h*/
+                    .replace_extension()/*.o*/.string();
+
+                for (const char* extension : extensions) {
+                    fs::remove(path + extension + ".h");
+                    fs::remove(path + extension + ".h.gch");
+                    fs::remove(path + extension + ".h.d");
+                }
+            }
+            else {
+                for (const char* extension : extensions)
+                    fs::remove(file.compiled_path.replace_extension(extension));
+                fs::remove(file.compiled_path.replace_extension(".d"));
+            }
+        }
+        fs::remove(dll.output_file);
     }
 };
 
@@ -435,7 +544,9 @@ int main(int argn, char** argv) {
     // std::cout << "Starting live reload session" << std::endl;
 
     live_cc.parse_arguments(argn, argv);
-    if (live_cc.compile_and_link() && live_cc.dll.build_type == LIVE)
+    if (live_cc.dll.build_type  == CLEAN)
+        live_cc.clean();
+    else if (live_cc.compile_and_link() && live_cc.dll.build_type == LIVE)
         live_cc.start(callback);
 
     return 0;
@@ -443,7 +554,6 @@ int main(int argn, char** argv) {
 
 // TODO: our own command line arguments:
 //  -h/--help
-// PCH support
-//     Automatic PCH support (check which headers are used most, how many percent of files use them).
 // TODO: move static stuff where possible
 
+// Glob support.

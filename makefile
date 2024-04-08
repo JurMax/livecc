@@ -1,2 +1,2 @@
 main:
-	g++ -O3 livecc.cpp -o livecc -L.
+	g++ -std=c++20 -O3 livecc.cpp -o livecc -L.
