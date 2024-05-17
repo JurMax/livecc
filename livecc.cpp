@@ -64,8 +64,10 @@ struct dll_t {
 
     fs::path modules_directory;
 
-    std::string build_command;
     build_type_t build_type = LIVE;
+    std::string build_command;
+    std::vector<std::string_view> build_include_dirs;
+
     bool include_source_parent_dir = true;
     bool rebuild_with_O0 = false;
 
@@ -143,16 +145,17 @@ private:
 struct init_data_t {
     // Store the library header file file times here, so we
     // don't have to keep checking them for changes.
-    std::unordered_map<fs::path, fs::file_time_type> library_changes;
+    std::unordered_map<fs::path, fs::file_time_type> file_changes;
     std::mutex mutex;
+    std::set<fs::path> system_headers;
 };
 
 
 struct source_file_t {
-    enum type_t
-    {
+    enum type_t {
         UNIT,
         PCH,
+        SYSTEM_PCH,
         MODULE,
         // HEADER_UNIT,
     };
@@ -161,45 +164,56 @@ struct source_file_t {
 
     fs::path source_path;
     fs::path compiled_path;
+
     type_t type;
+    inline bool typeIsPCH() const { return type == PCH || type == SYSTEM_PCH; }
 
     std::optional<fs::file_time_type> last_write_time;
-    std::vector<fs::path> dependency_paths;
 
     fs::path latest_dll;
 
     // TODO: implement this. Also add support for header units. Used header units
     // should also be added to the source files with the header unit type
     std::string module_name; // if type == MODULE.
-    std::set<std::string> module_dependencies;
 
+    std::set<fs::path> header_dependencies;
+    std::set<std::string> module_dependencies;
+    std::string build_pch_includes; // pch includes to add to the build command.
 
     // RUNTIME:
     // Files that depend on this module. These get added to the queue
     // once this file is done with compiling, and they have no other
     // dependencies left.
-    std::vector<source_file_t*> module_dependent_files;
-    std::atomic<int> compiled_modules; // When this is equal to module_dependencies.size(), we can compile.
+    std::vector<source_file_t*> dependent_files;
 
-    source_file_t(dll_t& dll, const std::string_view& path, bool is_pch = false)
-        : dll(dll), source_path(path), type(is_pch ? PCH : UNIT) {}
+    std::atomic<int> compiled_dependencies; // When this is equal to dependencies_count, we can compile.
+    int dependencies_count = 0;
+
+    source_file_t(dll_t& dll, const fs::path& path, type_t type = UNIT)
+        : dll(dll), source_path(path),
+          type(type == UNIT && source_path.extension().string().starts_with(".h") ? PCH : type) {}
 
     source_file_t(source_file_t&& lhs) : dll(lhs.dll) {
         source_path = std::move(lhs.source_path);
         compiled_path = std::move(lhs.compiled_path);
         type = std::move(lhs.type);
         last_write_time = std::move(lhs.last_write_time);
-        dependency_paths = std::move(lhs.dependency_paths);
         latest_dll = std::move(lhs.latest_dll);
         module_name = std::move(lhs.module_name);
+        header_dependencies = std::move(lhs.header_dependencies);
         module_dependencies = std::move(lhs.module_dependencies);
-        module_dependent_files = std::move(lhs.module_dependent_files);
+        build_pch_includes = std::move(lhs.build_pch_includes);
+        dependent_files = std::move(lhs.dependent_files);
     }
 
     // Returns true if it must be compiled.
     bool load_dependencies(init_data_t& init_data) {
         compiled_path = (dll.output_directory / source_path);
-        compiled_path.replace_extension(type == PCH ? ".h.gch" : ".o");
+        if (typeIsPCH())
+            compiled_path += ".gch";
+        else
+            compiled_path.replace_extension(".o");
+
         fs::path dependencies_path = fs::path(compiled_path).replace_extension(".d");
         fs::path modules_path = fs::path(compiled_path).replace_extension(".dm");
 
@@ -289,7 +303,7 @@ private:
     }
 
     std::optional<fs::file_time_type> load_header_dependencies(const fs::path& path, init_data_t& init_data) {
-        dependency_paths.clear();
+        header_dependencies.clear();
         fs::file_time_type sources_edit_time = fs::last_write_time(source_path);
         std::ifstream f(path);
         std::vector<char> str;
@@ -304,15 +318,21 @@ private:
                     // use a map for efficiency.
                     fs::path s = fs::canonical(std::string_view{&str[0], str.size()});
                     std::unique_lock<std::mutex> lock(init_data.mutex);
-                    auto it = init_data.library_changes.find(s);
-                    if (it == init_data.library_changes.end())
-                        it = init_data.library_changes.emplace_hint(it, s, fs::last_write_time(s));
+                    auto it = init_data.file_changes.find(s);
+                    if (it == init_data.file_changes.end())
+                        it = init_data.file_changes.emplace_hint(it, s, fs::last_write_time(s));
                     if (it->second > sources_edit_time)
                         sources_edit_time = it->second;
 
-                    if (str[0] != '/')
+                    bool system_header = str.size() > 4 && str[0] == '/' && str[1] == 'u' && str[2] == 's' && str[3] == 'r' && str[4] == '/';
+                    if (!system_header) {
                         // Is a relative path so add it to the dependencies.
-                        dependency_paths.emplace_back(fs::relative(s, dll.working_directory));
+                        header_dependencies.insert(fs::relative(s, dll.working_directory));
+                    }
+                    else if (!s.has_extension()) {
+                        header_dependencies.insert(s);
+                        init_data.system_headers.insert(s);
+                    }
                 }
                 catch (const fs::filesystem_error&) {
                     // File does not exist anymore, which mean we
@@ -329,16 +349,14 @@ private:
             else str.push_back(c);
         } while (is_good);
 
-        // Add the source file if no .d file was found.
-        if (dependency_paths.empty())
-            dependency_paths.emplace_back(source_path);
-
         return sources_edit_time;
     }
 
 
 public:
     bool has_source_changed() {
+        if (typeIsPCH())
+            return false;
         try {
             fs::file_time_type new_write_time = fs::last_write_time(source_path);
             if (!last_write_time || *last_write_time < new_write_time) {
@@ -353,7 +371,7 @@ public:
         return false;
 
         // bool changed = false;
-        // for (const fs::path& p : dependency_paths) {
+        // for (const fs::path& p : header_dependencies) {
         //     try {
         //         fs::file_time_type new_write_time = fs::last_write_time(p);
         //         if (new_write_time > last_edit_time) {
@@ -371,36 +389,57 @@ public:
     }
 
     std::string get_build_command(bool live_compile = false, fs::path* output_path = nullptr) {
-        bool create_temporary_object = live_compile && output_path != nullptr && type == UNIT;
+        std::ostringstream command;
+        command << dll.build_command;
 
+        // Add include directories to the build command, with possible compiled dirs.
+        for (std::string_view& dir : dll.build_include_dirs) {
+            // if (output_path != nullptr)
+                // command << " -I\"" << dll.output_directory.string() << '/' << dir << '"';
+            command << " -I\"" << dir << '"';
+        }
+        if (output_path != nullptr)
+            command << build_pch_includes;
+
+        // Get/set the output path.
         fs::path output_path_owned;
         if (output_path == nullptr)
             output_path = &output_path_owned;
 
+        bool create_temporary_object = live_compile && output_path != nullptr && type == UNIT;
         *output_path = !create_temporary_object ? compiled_path
             : dll.output_directory / "tmp"
                 / ("tmp" + (std::to_string(dll.temporary_files.size()) + ".so"));
 
-        std::string command = dll.build_command;
+        // Include the parent dir of every file.
         if (dll.include_source_parent_dir) {
             if (source_path.has_parent_path())
-                command += " -I" + source_path.parent_path().string();
+                command << " -I" << source_path.parent_path().string();
             else
-                command += " -I.";
+                command << " -I.";
         }
 
-        if (type == PCH)
-            command += " -c -x c++-header ";
-        else if (!live_compile && type == MODULE)
-            command += " --precompile ";
-        else if (!live_compile)
-            command += " -c ";
-        else if (dll.rebuild_with_O0)
-            command += " -O0 ";
+        if (typeIsPCH())
+            command << " -c -x c++-header ";
+        else if (!live_compile) {
+            if (type == MODULE)
+                command << " --precompile ";
+            else
+                command << " -c ";
+        }
+        else {
+            command << " -shared ";
+            if (dll.rebuild_with_O0)
+                command << " -O0 ";
+        }
 
-        command += " -o " + output_path->string();
-        command += " " + source_path.string();
-        return command;
+        command << " -o " + output_path->string();
+
+        if (type == SYSTEM_PCH)
+            command << " " + compiled_path.replace_extension().string();
+        else
+            command << " " + source_path.string();
+        return command.str();
     }
 
     // Returns true if an error occurred.
@@ -410,10 +449,10 @@ public:
 
         dll.log_info("Compiling", source_path, "to", output_path);
 
-        // Create a fake header file so we can include the pch later.
-        if (type == PCH) {
-            fs::copy(source_path, fs::path(compiled_path).replace_extension(),
-                fs::copy_options::overwrite_existing);
+        // Create a fake hpp file to contain the system header.
+        if (type == SYSTEM_PCH) {
+            std::ofstream h(compiled_path.replace_extension());
+            h << "#pragma once\n#include <" << compiled_path.filename().string() << ">\n";
         }
 
         // Run the command, and exit when interrupted.
@@ -519,6 +558,7 @@ struct live_cc_t {
                         dll.output_file = arg.substr(2);
                 }
                 else if (arg[1] == 'j') {
+                    // Set the number of parallel threads to use.
                     if (arg.length() == 2)
                         dll.job_count = std::stoi(argv[++i]);
                     else
@@ -528,11 +568,17 @@ struct live_cc_t {
                     dll.link_arguments += " ";
                     dll.link_arguments += arg;
                 }
+                else if (arg[1] == 'I') {
+                    std::string_view dir = std::string_view(arg).substr(2);
+                    if (dir[0] == '"' && dir[dir.length() - 1] == '"')
+                        dir = dir.substr(1, dir.length() - 2);
+                    dll.build_include_dirs.push_back(dir);
+                }
                 else if (arg.starts_with("--pch")) {
                     if (arg.length() == 5)
                         next_arg_type = PCH;
                     else
-                        files.emplace_back(dll, arg, true);
+                        files.emplace_back(dll, arg, source_file_t::PCH);
                 }
                 else if (arg == "--standalone")
                     dll.build_type = STANDALONE;
@@ -555,7 +601,7 @@ struct live_cc_t {
                 if (next_arg_type == INPUT)
                     files.emplace_back(dll, arg);
                 else if (next_arg_type == PCH)
-                    files.emplace_back(dll, arg, true);
+                    files.emplace_back(dll, arg, source_file_t::PCH);
                 else if (next_arg_type == OUTPUT)
                     dll.output_file = arg;
                 else
@@ -584,10 +630,11 @@ struct live_cc_t {
         }
 
         // Create the temporary and the modules directories.
-        fs::create_directories(dll.output_directory / "tmp");
         dll.modules_directory = dll.output_directory / "modules";
         build_command << " -fprebuilt-module-path=" << dll.modules_directory;
         fs::create_directories(dll.modules_directory);
+        fs::create_directories(dll.output_directory / "tmp");
+        fs::create_directories(dll.output_directory / "system");
 
         if (dll.build_type == LIVE || dll.build_type == SHARED) {
             build_command << " -fPIC";
@@ -596,9 +643,7 @@ struct live_cc_t {
         if (dll.build_type == LIVE)
             build_command << " -fno-inline";// -fno-ipa-sra";
         // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-
         build_command << " -MD -Winvalid-pch";
-
 
         dll.build_command = build_command.str();
     }
@@ -620,20 +665,17 @@ struct live_cc_t {
         return true;
     }
 
-    bool compile_modules( std::set<source_file_t*>& modules_to_compile,
-                          std::vector<source_file_t*>& sources_to_compile) {
-        if (!create_dependency_tree())
-            return false;
-
+    void add_module_dependencies(std::set<source_file_t*>& to_compile, std::set<source_file_t*>& modules_to_compile) {
         // Find all the files we need to compile because of the changed modules.
         std::stack<source_file_t*> check_stack;
-        for (source_file_t* f : modules_to_compile) check_stack.emplace(f);
-
-        std::set<source_file_t*>& to_compile = modules_to_compile;
-        for (source_file_t* f : sources_to_compile) to_compile.emplace(f);
+        for (source_file_t* f : modules_to_compile) {
+            check_stack.emplace(f);
+        }
 
         // TODO: find a way to check if the exports of a module have changed,
-        // instead of recompiling every time anything in it has changed.
+        // instead of recompiling every time anything in it has changed. This
+        // SHOULD be possible, this would make modules so much better. If not,
+        // then using modules might not be worth it........
 
         while (!check_stack.empty()) {
             source_file_t* f = check_stack.top();
@@ -641,7 +683,7 @@ struct live_cc_t {
 
             // Iterate over all the file that depend on this file,
             // and add them to the to_compile files.
-            for (source_file_t* d : f->module_dependent_files) {
+            for (source_file_t* d : f->dependent_files) {
                 auto it = to_compile.find(d);
                 if (it == to_compile.end()) {
                     to_compile.emplace_hint(it, d);
@@ -649,14 +691,16 @@ struct live_cc_t {
                 }
             }
         }
+    }
 
+    bool compile_files(std::set<source_file_t*>& to_compile) {
         dll.log_set_task("COMPILING", to_compile.size());
         ThreadPool pool(dll.job_count);
 
         // Add all files that have no dependencies to the compile queue.
         // As these compile they will add all the other files too.
         for (source_file_t& f : files) {
-            if (f.module_dependencies.size() == 0) {
+            if (f.dependencies_count == 0) {
                 add_to_compile_queue(pool, to_compile, &f);
             }
         }
@@ -668,8 +712,8 @@ struct live_cc_t {
 
 private:
     void mark_compiled(ThreadPool& pool, const std::set<source_file_t*>& to_compile, source_file_t* f) {
-        for (source_file_t* d : f->module_dependent_files) {
-            if (++d->compiled_modules == d->module_dependencies.size()) {
+        for (source_file_t* d : f->dependent_files) {
+            if (++d->compiled_dependencies == d->dependencies_count) {
                 add_to_compile_queue(pool, to_compile, d);
             }
         }
@@ -695,6 +739,8 @@ private:
     bool create_dependency_tree() {
         // module name -> source file
         std::map<std::string, source_file_t*> module_map;
+        std::map<fs::path, source_file_t*> header_map;
+
         for (source_file_t& f : files) {
             if (f.type == source_file_t::MODULE) {
                 auto it = module_map.find(f.module_name);
@@ -706,18 +752,32 @@ private:
                     return false;
                 }
             }
+            else if (f.typeIsPCH()) {
+                header_map.emplace(f.source_path, &f);
+            }
         }
 
-        // Fill the module_dependent_files of each module, e.g.
+        // Fill the dependent_files of each module, e.g.
         // the files that depend on that module.
         for (source_file_t& f : files) {
+            for (const fs::path& header : f.header_dependencies) {
+                auto it = header_map.find(header);
+                if (it != header_map.end() && &f != it->second) {
+                    it->second->dependent_files.push_back(&f);
+                    ++f.dependencies_count;
+                    if (f.type == source_file_t::SYSTEM_PCH)
+                        f.build_pch_includes += " -include \"" + it->second->compiled_path.replace_extension().string() + '"';
+                    f.build_pch_includes += " -include-pch \"" + it->second->compiled_path.string() + '"';
+                }
+            }
             for (const std::string& module : f.module_dependencies) {
                 auto it = module_map.find(module);
                 if (it == module_map.end()) {
                     dll.log_error("Error in", f.source_path, ": module", module, "does not exist");
                     return false;
                 }
-                it->second->module_dependent_files.push_back(&f);
+                it->second->dependent_files.push_back(&f);
+                ++f.dependencies_count;
             }
         }
         return true;
@@ -730,43 +790,53 @@ public:
         // Make sure all the files are compiled.
         bool did_compilation = false;
         {
-            std::vector<source_file_t*> headers_to_compile;
-            std::vector<source_file_t*> sources_to_compile;
             std::set<source_file_t*> modules_to_compile;
+            std::set<source_file_t*> files_to_compile;
 
             {
+                std::vector<size_t> modules_to_compile_i;
+                std::vector<size_t> files_to_compile_i;
+
                 init_data_t init_data;
                 dll.log_set_task("LOADING DEPENDENCIES", files.size());
                 ThreadPool pool(dll.job_count);
-                for (source_file_t& file : files)
-                    pool.enqueue([&] () {
+                for (size_t i = 0; i < files.size(); ++i)
+                    pool.enqueue([&, i] () {
+                        source_file_t& file = files[i];
                         if (file.load_dependencies(init_data)) {
                             std::unique_lock<std::mutex> lock(init_data.mutex);
-                            did_compilation = true;
-                            switch (file.type) {
-                                case source_file_t::PCH: headers_to_compile.push_back(&file); break;
-                                case source_file_t::UNIT: sources_to_compile.push_back(&file); break;
-                                case source_file_t::MODULE: modules_to_compile.insert(&file); break;
-                            }
+                            files_to_compile_i.push_back(i);
+                            if (file.type == source_file_t::MODULE)
+                                modules_to_compile_i.push_back(i);
                         }
                         dll.log_step_task();
                         return false;
                     });
                 pool.join();
                 dll.log_clear_task();
+
+                // Create system header compilation units and mark them for recompilation if necessary.
+                for (const fs::path& header_path : init_data.system_headers) {
+                    source_file_t& f = files.emplace_back(dll, header_path, source_file_t::SYSTEM_PCH);
+                    f.compiled_path = dll.output_directory / "system" / (header_path.filename().string() + ".gch");
+                    if (!fs::exists(f.compiled_path) || fs::last_write_time(f.compiled_path) < init_data.file_changes[header_path])
+                        files_to_compile_i.push_back(files.size() - 1);
+                }
+
+                for (size_t i : modules_to_compile_i) modules_to_compile.insert(&files[i]);
+                for (size_t i : files_to_compile_i) files_to_compile.insert(&files[i]);
             }
 
-            // Compile all the pch headers.
-            if (!compile_files("HEADERS", headers_to_compile))
+            if (!create_dependency_tree())
                 return false;
 
-            // Add the PCH files to the build command. TODO: do this more efficiently.
-            for (source_file_t& file : files)
-                if (file.type == source_file_t::PCH)
-                    dll.build_command += " -include " + fs::path(file.compiled_path).replace_extension().string();
+            if (!modules_to_compile.empty())
+                add_module_dependencies(files_to_compile, modules_to_compile);
 
-            // Compile all the modules headers. TODO: do this smarter, with dependency stuff.
-            if (!compile_modules(modules_to_compile, sources_to_compile))
+            did_compilation = !files_to_compile.empty();
+
+            // Compile all the modules headers.
+            if (!compile_files(files_to_compile))
                 return false;
         }
 
@@ -779,7 +849,7 @@ public:
             link_command << dll.link_arguments;
             link_command << " -o " << dll.output_file;
             for (source_file_t& file : files)
-                if (file.type != source_file_t::PCH)
+                if (!file.typeIsPCH())
                     link_command << ' ' << file.compiled_path;
 
             dll.log_info("Linking sources together...");
