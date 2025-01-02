@@ -1,3 +1,5 @@
 livecc
 *pkg.tar.zst
 pkg
+*.o
+*.d

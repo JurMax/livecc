@@ -156,8 +156,8 @@ struct live_cc_t {
             build_command << " -fPIC";
             dll.link_arguments += " -shared";
         }
-        if (dll.build_type == LIVE)
-            build_command << " -fno-inline";// -fno-ipa-sra";
+        // if (dll.build_type == LIVE)
+            // build_command << " -fno-inline";// -fno-ipa-sra";
         // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
         build_command << " -MD -Winvalid-pch";
 
