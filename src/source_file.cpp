@@ -300,6 +300,8 @@ bool source_file_t::compile(bool live_compile) {
         fs::create_symlink(fs::relative(output_path, dll.modules_directory), symlink);
     }
 
+    if (live_compile)
+        dll.log_info("Done!");
     return false;
 }
 
