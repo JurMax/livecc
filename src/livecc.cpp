@@ -76,9 +76,8 @@ struct live_cc_t {
                     else
                         dll.job_count = std::stoi(argv[i] + 2);
                 }
-                else if (arg[1] == 'l' || arg[1] == 'L') {
-                    dll.link_arguments += " ";
-                    dll.link_arguments += arg;
+                else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=")) {
+                    dll.link_arguments += " " + std::string(arg);
                 }
                 else if (arg[1] == 'I') {
                     std::string_view dir = std::string_view(arg).substr(2);
@@ -380,6 +379,7 @@ public:
             std::ostringstream link_command;
             link_command << dll.build_command;
             link_command << dll.link_arguments;
+            link_command << " -Wl,-z,defs"; // Make sure that all symbols are resolved.
             link_command << " -o " << dll.output_file;
             for (source_file_t& file : files)
                 if (!file.typeIsPCH())
