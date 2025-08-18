@@ -343,7 +343,7 @@ struct Parser {
 
     inline bool path_add_char(char c) {
         path[path_len++] = c;
-        return path_len != sizeof(path) - 1;
+        return path_len != sizeof(path);
     }
 
     inline void debug_print(const char* identifier) {
