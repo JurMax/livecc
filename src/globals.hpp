@@ -28,7 +28,7 @@ enum build_type_t {
     STANDALONE,   // Build as a standalone executable.
 };
 
-struct dll_t {
+struct Context {
     fs::path working_directory;
     fs::path output_file;
     fs::path output_directory;
@@ -64,7 +64,7 @@ private:
     int term_width;
 
 public:
-    dll_t() {
+    Context() {
         struct winsize w;
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
         term_width = w.ws_col;

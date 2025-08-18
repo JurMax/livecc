@@ -68,8 +68,7 @@ public:
     }
 
     // Destructor to stop the thread pool
-    ~ThreadPool()
-    {
+    ~ThreadPool() {
         {
             // Lock the queue to update the stop flag safely
             std::unique_lock<std::mutex> lock(mutex);
@@ -104,8 +103,7 @@ public:
     }
 
     // Enqueue task for execution by the thread pool
-    void enqueue(std::function<bool()> task)
-    {
+    void enqueue(std::function<bool()> task) {
         {
             std::unique_lock<std::mutex> lock(mutex);
             tasks.emplace(std::move(task));
