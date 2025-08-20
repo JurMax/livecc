@@ -375,7 +375,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 
     if (compilation_failed) {
         context.log_info("Error compiling ", compiled_path, ": ", err);
-        return true;
+        return false;
     }
 
     std::error_code err_code;
@@ -388,7 +388,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
         fs::create_symlink(fs::relative(output_path, context.modules_directory), symlink);
     }
 
-    return false;
+    return true;
 }
 
 void SourceFile::replace_functions(Context& context) {

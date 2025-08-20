@@ -403,12 +403,12 @@ public:
     private:
         void add_to_compile_queue(SourceFile& file) {
             if (file.need_compile) {
-                pool.enqueue([&] {
-                    bool error = file.compile(context);
-                    if (!error)
+                pool.enqueue([&] -> bool {
+                    bool success = file.compile(context);
+                    if (success)
                         mark_compiled(file);
                     context.log_step_task();
-                    return error;
+                    return !success;
                 });
             }
             else // We don't need to compile this file, so add its dependencies to the queue.
@@ -521,9 +521,10 @@ public:
         SourceFile& file = files[path_index];
         if (file.has_source_changed()) {
             // TODO: only recompile the actual function that has been changed.
-            file.compile(context, true);
-            file.replace_functions(context);
-            context.log_info("Done!");
+            if (file.compile(context, true)) {
+                file.replace_functions(context);
+                context.log_info("Done!");
+            }
         }
     }
 

@@ -66,7 +66,7 @@ public:
 
     std::string get_build_command(const Context& context, bool live_compile, fs::path* output_path);
 
-    // Returns true if an error occurred.
+    // Returns true if no errors occurred.
     bool compile(Context& context, bool live_compile = false);
     void replace_functions(Context& context);
 };
