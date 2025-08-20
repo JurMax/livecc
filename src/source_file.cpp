@@ -25,8 +25,8 @@ struct Parser {
     enum Return { OK, OPEN_FAILED, UNEXPECTED_END, PATH_TOO_LONG };
 
     SourceFile& file;
-    char path[4096];
-    size_t path_len = 0;
+    char buffer[4096];
+    size_t buf_len = 0;
 
     std::ifstream f; // TODO: use a direct buffer here.
     char c;
@@ -80,15 +80,15 @@ struct Parser {
         include_spaces: switch (c = read_char()) {
             case '/': parse_comment();
             case ' ': case '\t': goto include_spaces;
-            case '<': path_len = 0; goto include_read_bracket;
-            case '"': path_len = 0; goto include_read_quote;
+            case '<': buf_len = 0; goto include_read_bracket;
+            case '"': buf_len = 0; goto include_read_quote;
             case EOF: return UNEXPECTED_END;
             default: goto token;
         }
         include_read_bracket: switch (c = read_char()) {
             case '>':
-                path[path_len] = '\0';
-                file.header_dependencies.emplace(path, SourceFile::SYSTEM_HEADER);
+                buffer[buf_len] = '\0';
+                file.header_dependencies.emplace(buffer, SourceFile::SYSTEM_HEADER);
                 goto token;
             case EOF: return UNEXPECTED_END;
             default:
@@ -98,7 +98,7 @@ struct Parser {
         }
         include_read_quote: switch (c = read_char()) {
             case '"':
-                path[path_len] = '\0';
+                buffer[buf_len] = '\0';
                 register_include(context);
                 goto token;
             case EOF: return UNEXPECTED_END;
@@ -113,15 +113,15 @@ struct Parser {
             case ' ': case '\t': case '\n': case '\r': goto import_spaces;
             case EOF: return UNEXPECTED_END;
             default:
-                path[0] = c;
-                path_len = 1;
+                buffer[0] = c;
+                buf_len = 1;
                 goto import_read;
         }
         import_read: switch (c = read_char()) {
             case '/': parse_comment();
             case ';': case ' ': case '\t': case '\n': case '\r':
-                path[path_len] = '\0';
-                file.module_dependencies.insert(path);
+                buffer[buf_len] = '\0';
+                file.module_dependencies.insert(buffer);
                 c = read_char();
                 goto empty_space;
             case EOF: return UNEXPECTED_END;
@@ -136,15 +136,15 @@ struct Parser {
             case ' ': case '\t': case '\n': case '\r': goto module_spaces;
             case EOF: return UNEXPECTED_END;
             default:
-                path[0] = c;
-                path_len = 1;
+                buffer[0] = c;
+                buf_len = 1;
                 goto module_read;
         }
         module_read: switch (c = read_char()) {
             case '/': parse_comment();
             case ';': case ' ': case '\t': case '\n': case '\r':
-                path[path_len] = '\0';
-                file.module_name = path;
+                buffer[buf_len] = '\0';
+                file.module_name = buffer;
                 c = read_char();
                 goto empty_space;
             case EOF: return UNEXPECTED_END;
@@ -183,13 +183,12 @@ struct Parser {
     }
 
     inline bool path_add_char(char c) {
-        path[path_len++] = c;
-        return path_len != sizeof(path);
+        buffer[buf_len++] = c;
+        return buf_len != sizeof(buffer);
     }
 
     void register_include(const Context& context) {
-        // TODO: do this all with one or zero allocations.
-        fs::path path(this->path);
+        fs::path path(buffer);
         if (path.is_absolute()) {
             try_add_include(context, path);
             return;
@@ -232,14 +231,26 @@ SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type
     return {};
 }
 
+void SourceFile::set_compile_path(const Context& context) {
+    if (type == SYSTEM_HEADER) {
+        compiled_path = context.output_directory / "system" / source_path;
+        compiled_path += ".gch";
+    }
+    else {
+        compiled_path = context.output_directory / source_path;
+        compiled_path += is_header() ? ".gch" : ".o";
+    }
+
+}
+
 void SourceFile::read_dependencies(Context& context) {
     std::error_code err;
 
-    if (type == SYSTEM_HEADER) {
-        // Check the compiled path write time.
-        compiled_path = context.output_directory / "system" / source_path;
-        compiled_path += ".gch";
+    if (compiled_path.empty())
+        set_compile_path(context);
 
+    if (type == SYSTEM_HEADER) {
+        // Check the system header write time by going through all the options.
         for (const fs::path& dir : context.system_include_dirs) {
             source_time = fs::last_write_time(dir / source_path, err);
             if (!err)
@@ -247,9 +258,6 @@ void SourceFile::read_dependencies(Context& context) {
         }
     }
     else {
-        // Check the compiled path write time.
-        compiled_path = context.output_directory / source_path;
-        compiled_path += is_header() ? ".gch" : ".o";
         source_time = fs::last_write_time(source_path, err);
 
         // Get the dependencies of anything but the system headers.
@@ -303,10 +311,10 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
     for (const std::string_view& dir : context.build_include_dirs) {
         // if (output_path != nullptr)
             // command << " -I\"" << dll.output_directory.string() << '/' << dir << '"';
-        command << " -I\"" << dir << '"';
+        command << "-I\"" << dir << "\" ";
     }
     if (output_path != nullptr)
-        command << build_pch_includes;
+        command << build_pch_includes; // TODO: add modules and header here.
 
     // Get/set the output path.
     fs::path output_path_owned;
@@ -321,31 +329,31 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
     // Include the parent dir of every file.
     if (context.include_source_parent_dir) {
         if (source_path.has_parent_path())
-            command << " -I" << source_path.parent_path().native();
+            command << "-I" << source_path.parent_path().native() << " ";
         else
-            command << " -I.";
+            command << "-I. ";
     }
 
     if (is_header())
-        command << " -c -x c++-header ";
+        command << "-c -x c++-header ";
     else if (!live_compile) {
         if (type == MODULE)
-            command << " --precompile ";
+            command << "--precompile ";
         else
-            command << " -c ";
+            command << "-c ";
     }
     else {
-        command << " -shared ";
+        command << "-shared ";
         if (context.rebuild_with_O0)
-            command << " -O0 ";
+            command << "-O0 ";
     }
 
-    command << " -o " << output_path->native();
+    command << "-o " << output_path->native() << " ";
 
     if (type == SYSTEM_HEADER)
-        command << " " << compiled_path.native() << ".hpp";
+        command << compiled_path.native() << ".hpp";
     else
-        command << " " << source_path.native();
+        command << source_path.native();
     return command.str();
 }
 

@@ -57,7 +57,10 @@ public:
 
     inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER || type == PCH; }
 
-    // Read the dependencies directly from the file.
+    /** Set the compile path to be inside context.output_directory */
+    void set_compile_path(const Context& context);
+
+    /** Read the dependencies directly from the file. */
     void read_dependencies(Context& context);
 
 public:

@@ -42,6 +42,7 @@ struct Context {
     bool verbose = false;
     bool test = false;
 
+    bool build_command_changed = false; // Has the build command changed since last invoke.
     std::string build_command;
     std::vector<std::string_view> build_include_dirs;
     std::vector<fs::path> system_include_dirs;
@@ -88,29 +89,29 @@ public:
     }
 
     template<typename ...Args>
-    void log_error(const Args&... args) {
+    inline void log_error(const Args&... args) {
         log_info(args...);
     }
     template<typename ...Args>
-    void log_error_title(const Args&... args) {
+    inline void log_error_title(const Args&... args) {
         log_info("\e[1;31mERROR:\e[0m \e[1m",  args..., "\e[0m");
     }
 
-    void log_set_task(const std::string_view& task, int task_total) {
+    inline void log_set_task(const std::string_view& task, int task_total) {
         task_name = task;
         bar_task_total = task_total;
         bar_task_current = 0;
     }
-    void log_clear_task() {
+    inline void log_clear_task() {
         task_name.clear();
     }
-    void log_step_task() {
+    inline void log_step_task() {
         std::unique_lock<std::mutex> lock(print_mutex);
         ++bar_task_current;
         print_bar();
     }
 private:
-    void print_bar() {
+    inline void print_bar() {
         std::cout << task_name << " [";
         int length = term_width - task_name.length() - 2 - 7;
         int progress = bar_task_current * length / bar_task_total;

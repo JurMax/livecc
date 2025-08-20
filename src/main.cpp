@@ -19,6 +19,7 @@
 #include <system_error>
 #include <unordered_map>
 #include <stdio.h>
+#include <fstream>
 
 // Sources: (order from bottom to top)
 // https://stackoverflow.com/questions/2694290/returning-a-shared-library-symbol-table
@@ -55,10 +56,12 @@ struct Main {
 
     size_t path_index = 0;
 
-    void parse_arguments(int argn, char** argv) {
+    // Returns true if all the arguments are valid.
+    bool parse_arguments(int argn, char** argv) {
         context.working_directory = fs::current_path();
         context.output_file = "build/a.out";
         std::ostringstream build_command;
+        std::ostringstream link_arguments;
         build_command << "clang++ "; // TODO add C support.
 
         enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
@@ -82,7 +85,7 @@ struct Main {
                         context.job_count = std::stoi(argv[i] + 2);
                 }
                 else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=")) {
-                    context.link_arguments += " " + std::string(arg);
+                    link_arguments << arg << ' ';
                 }
                 else if (arg[1] == 'I') {
                     std::string_view dir = std::string_view(arg).substr(2);
@@ -107,7 +110,7 @@ struct Main {
                 else if (arg == "--test")
                     context.test = true;
                 else {
-                    build_command << ' ' << arg;
+                    build_command << arg << ' ';
 
                     // The next argument is part of this flag, so it's not a file.
                     // TODO: handle all the arguments in which you specify an option.
@@ -128,7 +131,7 @@ struct Main {
                 else if (next_arg_type == OUTPUT)
                     context.output_file = arg;
                 else
-                    build_command << ' ' << arg;
+                    build_command << arg << ' ';
                 next_arg_type = INPUT;
             }
         }
@@ -160,38 +163,58 @@ struct Main {
         fs::create_directories(context.output_directory / "system");
 
         if (context.build_type == LIVE || context.build_type == SHARED) {
-            build_command << " -fPIC";
-            context.link_arguments += " -shared";
+            build_command << "-fPIC ";
+            link_arguments << "-shared ";
         }
         // if (context.build_type == LIVE)
-            // build_command << " -fno-inline";// -fno-ipa-sra";
+            // build_command << "-fno-inline ";// -fno-ipa-sra";
         // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-        build_command << " -Winvalid-pch";
+        build_command << "-Winvalid-pch ";
 
         if (context.test) {
             if (context.build_type == STANDALONE)
                 context.log_error("Tests can't be run in standalone mode!");
             else
-                build_command << " -DLCC_TEST";
+                build_command << "-DLCC_TEST ";
         }
 
         context.build_command = build_command.str();
-        get_system_include_dirs();
+        context.link_arguments = link_arguments.str();
+        return true;
     }
 
-    bool add_source_directory( const std::string_view& dir ) {
+    /**
+     * Add all the source files in a given directory to the build system.
+     * Returns true if the given path was actually a directory.
+     */
+    bool add_source_directory( const std::string_view& dir_path ) {
         std::error_code err;
-        for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir, err))
+        for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
             if (auto type = SourceFile::get_type(dir_entry.path().native()))
                 files.emplace_back(context, dir_entry.path(), *type);
         return !err;
     }
 
-    void get_system_include_dirs() {
-        // TODO: cache this, only check if clang file write time changes on startup.
+    /**
+     * Invoke clang and read the previous configuration.
+     */
+    bool initialise() {
+        if (get_system_include_dirs()) {
+            context.build_command_changed = have_build_args_changed();
+            update_compile_commands(context.build_command_changed);
+            return true;
+        }
+        return false;
+    }
+
+
+    bool get_system_include_dirs() {
+        // TODO: maybe cache this, only check if clang file write time changes on startup.
         char buf[4096];
         FILE* pipe = popen("echo | clang -xc++ -E -v - 2>&1 >/dev/null", "r");
-        while (fgets(buf, sizeof(buf), pipe) != NULL) {
+        if (pipe == NULL)
+            return false;
+        while (fgets(buf, sizeof(buf), pipe) != nullptr) {
             if (buf[0] == ' ' && buf[1] == '/') {
                 size_t len = 2;
                 while (buf[len] != '\n' && buf[len] != '\0') ++len;
@@ -199,7 +222,74 @@ struct Main {
                 context.system_include_dirs.push_back(buf + 1);
             }
         }
-        pclose(pipe);
+        return pclose(pipe) == 0;
+    }
+
+    bool have_build_args_changed() {
+        // Read build args from file.
+        fs::path command_file = (context.output_directory / "command.txt");
+        if (FILE* f = fopen(command_file.c_str(), "rb")) {
+            char buff[256];
+            bool changed = false;
+            size_t count, i = 0;
+            while ((count = fread(buff, 1, sizeof(buff), f)))
+                for (size_t j = 0; j != count; ++j, ++i)
+                    if (i == context.build_command.size() || buff[j] != context.build_command[i]) {
+                        changed = true;
+                        goto stop;
+                    }
+            if (i != context.build_command.size())
+                changed = true;
+        stop:
+            fclose(f);
+            if (!changed)
+                return false;
+        }
+
+        // Write the new build file.
+        if (FILE* f = fopen(command_file.c_str(), "wb")) {
+            fwrite(context.build_command.c_str(), 1, context.build_command.length(), f);
+            fclose(f);
+        }
+
+        return true;
+    }
+
+    void update_compile_commands(bool need_update = true) {
+        // If a file was not compiled before, we need to recreate the compile_commands.json
+        for (auto it = files.begin(), end = files.end(); it != end && !need_update; ++it)
+            if (!it->is_header() && !it->compiled_time)
+                need_update = true;
+
+        if (need_update) {
+            std::ofstream compile_commands("compile_commands.json");
+            std::string dir_string = "\t\t\"directory\": \"" + context.working_directory.native() + "\",\n";
+            compile_commands << "[\n";
+            fs::path output_path;
+
+            bool first = true;
+            for (SourceFile& file : files) {
+                file.set_compile_path(context);
+                if (file.is_header())
+                    continue;
+                if (!first) compile_commands << ",\n";
+                else first = false;
+                compile_commands << "\t{\n";
+                compile_commands << dir_string;
+                compile_commands << "\t\t\"command\": \"";
+                std::string command = file.get_build_command(context, false, &output_path);
+                for (char c : command) {
+                    if (c == '"')
+                        compile_commands.put('\\');
+                    compile_commands.put(c);
+                }
+                compile_commands << "\",\n";
+                compile_commands << "\t\t\"file\": \""
+                    << file.source_path.native() << "\"\n";
+                compile_commands << "\t}";
+            }
+            compile_commands << "\n]\n";
+        }
     }
 
 public:
@@ -292,9 +382,16 @@ public:
         // Returns true if at least 1 file should be compiled.
         uint mark_for_compilation() {
             uint compile_count = 0;
-            for (SourceFile& file : files)
-                if (file.dependencies_count == 0)
-                    compile_count += check_file_for_compilation(file);
+            if (context.build_command_changed) {
+                for (SourceFile& file : files)
+                    file.need_compile = true;
+                compile_count += files.size();
+            }
+            else {
+                for (SourceFile& file : files)
+                    if (file.dependencies_count == 0)
+                        compile_count += check_file_for_compilation(file);
+            }
             return compile_count;
         }
 
@@ -355,7 +452,7 @@ public:
                     context.log_error_title("compilation failed for:");
                     for (SourceFile& file : files)
                         if (file.compilation_failed)
-                            context.log_error(' ', file.source_path);
+                            context.log_error("\t", file.source_path);
                 }
                 else {
                     context.log_info();
@@ -363,13 +460,12 @@ public:
                     for (SourceFile& file : files) {
                         if (file.compiled_dependencies != file.dependencies_count) {
                             if (depends_on(file, file)) {
-                                std::cout << " ";
+                                std::cout << "\t";
                                 depends_on_print(file, file);
                                 std::cout << " -> " << file.source_path << std::endl;
                             }
                         }
                     }
-                    // TODO: can we be sure the compilation failed due to circular dependencies?
                 }
             }
 
@@ -431,7 +527,7 @@ public:
                 return false;
             compile_count = builder.mark_for_compilation();
         }
-        {
+        if (compile_count != 0) {
             Compiler compiler{context, files, context.job_count};
             if (!compiler.compile_files(compile_count))
                 return false;
@@ -444,8 +540,8 @@ public:
             std::ostringstream link_command;
             link_command << context.build_command;
             link_command << context.link_arguments;
-            link_command << " -Wl,-z,defs"; // Make sure that all symbols are resolved.
-            link_command << " -o " << context.output_file;
+            link_command << "-Wl,-z,defs "; // Make sure that all symbols are resolved.
+            link_command << "-o " << context.output_file;
             for (SourceFile& file : files)
                 if (!file.is_header())
                     link_command << ' ' << file.compiled_path;
@@ -572,15 +668,24 @@ static Main* main_ptr;
 int main(int argn, char** argv) {
     Main main;
     main_ptr = &main;
-    main.parse_arguments(argn, argv);
+    if (!main.parse_arguments(argn, argv)) {
+        main.context.log_error("Failed parsing some arguments");
+        // TODO: show help.
+        return 1;
+    }
 
     if (main.files.empty()) {
         main.add_source_directory("src");
         if (main.files.empty()) {
             // TODO: show help.
             main.context.log_error("No input files");
-            return 1;
+            return 2;
         }
+    }
+
+    if (!main.initialise()) {
+        main.context.log_error("Couldn't find clang, is it in the path?");
+        return 1;
     }
 
     if (main.compile_and_link()) {
