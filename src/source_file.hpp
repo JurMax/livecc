@@ -23,7 +23,8 @@ struct SourceFile {
     fs::path source_path; // always relative to the working directory.
     fs::path compiled_path;
 
-    fs::file_time_type source_time;
+    // If its defined it means the file exists.
+    std::optional<fs::file_time_type> source_time;
     std::optional<fs::file_time_type> compiled_time;
     bool has_changed = false;
     bool need_compile = false;

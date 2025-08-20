@@ -14,8 +14,10 @@
 static fs::path normalise_path(const Context& context, const fs::path& path) {
     std::error_code err;
     fs::path absolute_path = fs::canonical(path, err);
+    if (err)
+        return path;
     fs::path relative_path = fs::relative(path, context.working_directory, err);
-    if (relative_path.native()[0] != '.')
+    if (!err && relative_path.native()[0] != '.')
         return relative_path;
     else
         return absolute_path;
@@ -237,10 +239,12 @@ void SourceFile::set_compile_path(const Context& context) {
         compiled_path += ".gch";
     }
     else {
-        compiled_path = context.output_directory / source_path;
+        const char* path = source_path.c_str();
+        if (source_path.is_absolute())
+            path += source_path.root_path().native().size();
+        compiled_path = context.output_directory / path;
         compiled_path += is_header() ? ".gch" : ".o";
     }
-
 }
 
 void SourceFile::read_dependencies(Context& context) {
@@ -249,26 +253,32 @@ void SourceFile::read_dependencies(Context& context) {
     if (compiled_path.empty())
         set_compile_path(context);
 
+    fs::file_time_type source_write_time;
     if (type == SYSTEM_HEADER) {
+        for (const std::string_view& dir : context.build_include_dirs) {
+            source_write_time = fs::last_write_time(dir / source_path, err);
+            if (!err)
+                break;
+        }
         // Check the system header write time by going through all the options.
         for (const fs::path& dir : context.system_include_dirs) {
-            source_time = fs::last_write_time(dir / source_path, err);
+            source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
                 break;
         }
     }
     else {
-        source_time = fs::last_write_time(source_path, err);
+        source_write_time = fs::last_write_time(source_path, err);
 
         // Get the dependencies of anything but the system headers.
         Parser parser(*this);
         switch (parser.parse(context)) {
             case Parser::OK: break;
             case Parser::OPEN_FAILED:
-                context.log_error("Failed to open file ", source_path);
+                // context.log_error("Failed to open file ", source_path);
                 break;
             case Parser::UNEXPECTED_END:
-                context.log_error("Parsing error in ", source_path, ", trying to continue");
+                context.log_error("Parsing error in ", source_path);
                 break;
             case Parser::PATH_TOO_LONG:
                 context.log_error("A path or name in ", source_path, " is larger than 4096 characters");
@@ -276,13 +286,16 @@ void SourceFile::read_dependencies(Context& context) {
         }
     }
 
+    if (!err)
+        source_time = source_write_time;
+
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
     if (!err) {
         compiled_time = compiled_write_time;
-        has_changed = source_time > compiled_time;
+        has_changed = !source_time || source_time > compiled_time;
     }
     else {
-        fs::create_directories(compiled_path.parent_path());
+        fs::create_directories(compiled_path.parent_path(), err);
         has_changed = true;
     }
 }

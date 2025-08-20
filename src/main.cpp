@@ -14,6 +14,7 @@
 #include "thread_pool.hpp"
 #include "context.hpp"
 #include "source_file.hpp"
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -124,7 +125,7 @@ struct Main {
                     if (auto type = SourceFile::get_type(arg))
                         files.emplace_back(context, arg, *type);
                     else if (!add_source_directory(arg))
-                        context.log_error("Unknown input supplied: ", arg);
+                        context.log_error_title("unknown input supplied: ", arg);
                 }
                 else if (next_arg_type == PCH)
                     files.emplace_back(context, arg, SourceFile::PCH);
@@ -158,9 +159,6 @@ struct Main {
         // Create the temporary and the modules directories.
         context.modules_directory = context.output_directory / "modules";
         // build_command << " -fprebuilt-module-path=" << context.modules_directory;
-        fs::create_directories(context.modules_directory);
-        fs::create_directories(context.output_directory / "tmp");
-        fs::create_directories(context.output_directory / "system");
 
         if (context.build_type == LIVE || context.build_type == SHARED) {
             build_command << "-fPIC ";
@@ -199,12 +197,24 @@ struct Main {
      * Invoke clang and read the previous configuration.
      */
     bool initialise() {
-        if (get_system_include_dirs()) {
-            context.build_command_changed = have_build_args_changed();
-            update_compile_commands(context.build_command_changed);
-            return true;
+        if (!get_system_include_dirs()) {
+            context.log_error("Couldn't find clang, is it in the path?");
+            return false;
         }
-        return false;
+
+        // try {
+        //     fs::create_directories(context.modules_directory);
+        //     fs::create_directories(context.output_directory / "tmp");
+        //     fs::create_directories(context.output_directory / "system");
+        // }
+        // catch (std::exception e) {
+        //     context.log_error("Failed to create directories: ", e.what());
+        //     return false;
+        // }
+
+        context.build_command_changed = have_build_args_changed();
+        update_compile_commands(context.build_command_changed);
+        return true;
     }
 
 
@@ -452,7 +462,7 @@ public:
                     context.log_error_title("compilation failed for:");
                     for (SourceFile& file : files)
                         if (file.compilation_failed)
-                            context.log_error("\t", file.source_path);
+                            context.log_error("        ", file.source_path);
                 }
                 else {
                     context.log_info();
@@ -460,7 +470,7 @@ public:
                     for (SourceFile& file : files) {
                         if (file.compiled_dependencies != file.dependencies_count) {
                             if (depends_on(file, file)) {
-                                std::cout << "\t";
+                                std::cout << "        ";
                                 depends_on_print(file, file);
                                 std::cout << " -> " << file.source_path << std::endl;
                             }
@@ -684,7 +694,6 @@ int main(int argn, char** argv) {
     }
 
     if (!main.initialise()) {
-        main.context.log_error("Couldn't find clang, is it in the path?");
         return 1;
     }
 
