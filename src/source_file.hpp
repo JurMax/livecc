@@ -28,6 +28,7 @@ struct SourceFile {
     bool has_changed = false;
     bool need_compile = false;
     bool visited = false;
+    bool compilation_failed = false;
 
     // TODO: implement this. Also add support for header units. Used header units
     // should also be added to the source files with the header unit type
@@ -47,7 +48,7 @@ struct SourceFile {
     int dependencies_count = 0;
 
     // RUNTIME.
-    fs::path latest_dll;
+    fs::path latest_obj;
 
 public:
     SourceFile(const Context& context, const fs::path& path, type_t type);

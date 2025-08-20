@@ -341,17 +341,63 @@ public:
             context.log_clear_task();
 
             bool everything_compiled = true;
-            for (SourceFile& file : files) {
-                if (file.compiled_dependencies != file.dependencies_count) {
-                    if (everything_compiled) {
-                        everything_compiled = false;
-                        context.log_error("\nFailed to compile files:");
+            bool compilations_failed = false;
+            for (auto it = files.begin(), end = files.end(); it != end && everything_compiled; ++it) {
+                if (it->compilation_failed)
+                    compilations_failed = true;
+                if (compilations_failed || it->compiled_dependencies != it->dependencies_count)
+                    everything_compiled = false;
+            }
+
+            if (!everything_compiled) {
+                if (compilations_failed) {
+                    context.log_info();
+                    context.log_error_title("compilation failed for:");
+                    for (SourceFile& file : files)
+                        if (file.compilation_failed)
+                            context.log_error(' ', file.source_path);
+                }
+
+                bool circular_dependency_found = false;
+                for (SourceFile& file : files) {
+                    if (file.compiled_dependencies != file.dependencies_count) {
+                        if (depends_on(file, file)) {
+                            if (!circular_dependency_found) {
+                                circular_dependency_found = true;
+                                context.log_info();
+                                context.log_error_title("circular dependencies found:");
+                            }
+                            std::cout << " ";
+                            depends_on_print(file, file);
+                            std::cout << " -> " << file.source_path << std::endl;
+                        }
                     }
-                    context.log_error(' ', file.source_path, " (",
-                        file.compiled_dependencies, '/' , file.dependencies_count, ')');
                 }
             }
+
             return everything_compiled;
+        }
+
+        /** Return true if the given depends (indirectly) on the given dependency. Is slow */
+        bool depends_on(SourceFile& file, SourceFile& dependency) {
+            for (SourceFile* dependent : dependency.dependent_files) {
+                if (dependent == &file) return true;
+                else if (depends_on(file, *dependent)) return true;
+            }
+            return false;
+        }
+        bool depends_on_print(SourceFile& file, SourceFile& dependency) {
+            for (SourceFile* dependent : dependency.dependent_files) {
+                if (dependent == &file) {
+                    std::cout << dependent->source_path;
+                    return true;
+                }
+                else if (depends_on_print(file, *dependent)) {
+                    std::cout << " -> " << dependent->source_path;
+                    return true;
+                }
+            }
+            return false;
         }
 
     private:
@@ -428,7 +474,7 @@ public:
         // Open the created shared library.
         context.handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (context.handle == nullptr)
-            context.log_error("Error loading application:", dlerror());
+            context.log_error("Loading application failed:", dlerror());
 
         CHK_PH(plthook_open_by_handle(&context.plthook, context.handle));
 

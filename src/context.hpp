@@ -75,7 +75,7 @@ public:
     void log_info(const Args&... args) {
         std::unique_lock<std::mutex> lock(print_mutex);
         std::ostringstream ss;
-        (ss << ... << args);
+        ((ss << args), ...);
         std::string to_print = ss.str();
         std::cout << to_print;
         for (int i = to_print.size() + 1; i < term_width; ++i)
@@ -88,7 +88,13 @@ public:
     }
 
     template<typename ...Args>
-    void log_error(const Args&... args) { log_info(args...); }
+    void log_error(const Args&... args) {
+        log_info(args...);
+    }
+    template<typename ...Args>
+    void log_error_title(const Args&... args) {
+        log_info("\e[1;31mERROR:\e[0m \e[1m",  args..., "\e[0m");
+    }
 
     void log_set_task(const std::string_view& task, int task_total) {
         task_name = task;

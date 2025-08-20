@@ -365,16 +365,15 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 
     // Run the command, and exit when interrupted.
     int err = system(build_command.c_str());
+    compilation_failed = err != 0;
     if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
         exit(1);
 
-    latest_dll = output_path;
+    latest_obj = output_path;
+    if (live_compile)
+        context.temporary_files.push_back(latest_obj);
 
-    if (live_compile) {
-        context.temporary_files.push_back(latest_dll);
-    }
-
-    if (err != 0) {
+    if (compilation_failed) {
         context.log_info("Error compiling ", compiled_path, ": ", err);
         return true;
     }
@@ -393,9 +392,9 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 }
 
 void SourceFile::replace_functions(Context& context) {
-    link_map* handle = (link_map*)dlopen(latest_dll.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
+    link_map* handle = (link_map*)dlopen(latest_obj.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
     if (handle == nullptr) {
-        context.log_info("Error loading ", latest_dll);
+        context.log_info("Error loading ", latest_obj);
         return;
     }
 
