@@ -14,6 +14,7 @@ struct SourceFile {
         UNIT,
         HEADER,
         SYSTEM_HEADER,
+        PCH,
         MODULE,
     };
 
@@ -53,7 +54,7 @@ public:
 
     static std::optional<type_t> get_type( const std::string_view& path );
 
-    inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER; }
+    inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER || type == PCH; }
 
     // Read the dependencies directly from the file.
     void read_dependencies(Context& context);

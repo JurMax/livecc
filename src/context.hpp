@@ -75,7 +75,7 @@ public:
     void log_info(const Args&... args) {
         std::unique_lock<std::mutex> lock(print_mutex);
         std::ostringstream ss;
-        auto _ = { (ss << args << ' ', 0)... };
+        (ss << ... << args);
         std::string to_print = ss.str();
         std::cout << to_print;
         for (int i = to_print.size() + 1; i < term_width; ++i)

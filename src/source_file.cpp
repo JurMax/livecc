@@ -249,11 +249,7 @@ void SourceFile::read_dependencies(Context& context) {
     else {
         // Check the compiled path write time.
         compiled_path = context.output_directory / source_path;
-        if (is_header())
-            compiled_path += ".gch";
-        else
-            compiled_path += ".o";
-
+        compiled_path += is_header() ? ".gch" : ".o";
         source_time = fs::last_write_time(source_path, err);
 
         // Get the dependencies of anything but the system headers.
@@ -261,13 +257,13 @@ void SourceFile::read_dependencies(Context& context) {
         switch (parser.parse(context)) {
             case Parser::OK: break;
             case Parser::OPEN_FAILED:
-                context.log_error("Failed to open file [", source_path, "]");
+                context.log_error("Failed to open file ", source_path);
                 break;
             case Parser::UNEXPECTED_END:
-                context.log_error("Parsing error in [", source_path, "], trying to continue");
+                context.log_error("Parsing error in ", source_path, ", trying to continue");
                 break;
             case Parser::PATH_TOO_LONG:
-                context.log_error("A path or name in [", source_path, "] is larger than 4096 characters");
+                context.log_error("A path or name in ", source_path, " is larger than 4096 characters");
                 break;
         }
     }
@@ -359,7 +355,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     std::string build_command = get_build_command(context, live_compile, &output_path);
 
     std::string print_command = context.verbose ? build_command : "";
-    context.log_info("Compiling", source_path, "to", output_path, print_command);
+    context.log_info("Compiling ", source_path, " to ", output_path, print_command);
 
     // Create a fake hpp file to contain the system header.
     if (type == SYSTEM_HEADER) {
@@ -379,7 +375,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     }
 
     if (err != 0) {
-        context.log_info("Error compiling", compiled_path, ": ", err);
+        context.log_info("Error compiling ", compiled_path, ": ", err);
         return true;
     }
 
@@ -398,7 +394,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 void SourceFile::replace_functions(Context& context) {
     link_map* handle = (link_map*)dlopen(latest_dll.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
     if (handle == nullptr) {
-        context.log_info("Error loading", latest_dll);
+        context.log_info("Error loading ", latest_dll);
         return;
     }
 

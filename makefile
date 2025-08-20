@@ -1,4 +1,4 @@
-SRC := src/livecc.cpp src/source_file.cpp src/plthook/plthook_elf.c
+SRC := src/main.cpp src/source_file.cpp src/plthook/plthook_elf.c
 OBJ := $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(SRC)))
 
 ARGS := -std=c++23 -Wall -O3

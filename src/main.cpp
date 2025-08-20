@@ -50,10 +50,10 @@ typedef int set_callback_func_t(dll_callback_func_t*);
 struct Main {
     Context context;
 
-    size_t path_index = 0;
-
     // We use a deque so that source files dont need to be moved.
     std::deque<SourceFile> files;
+
+    size_t path_index = 0;
 
     void parse_arguments(int argn, char** argv) {
         context.working_directory = fs::current_path();
@@ -93,8 +93,8 @@ struct Main {
                 else if (arg.starts_with("--pch")) {
                     if (arg.length() == 5)
                         next_arg_type = PCH;
-                    else // TODO: this should actually be a PCH
-                        files.emplace_back(context, arg, SourceFile::HEADER);
+                    else
+                        files.emplace_back(context, arg, SourceFile::PCH);
                 }
                 else if (arg == "--standalone")
                     context.build_type = STANDALONE;
@@ -112,19 +112,19 @@ struct Main {
                     // The next argument is part of this flag, so it's not a file.
                     // TODO: handle all the arguments in which you specify an option.
                     // like: -MD, --param, etc.
-                    if (arg.length() == 2
-                        || (arg.starts_with("-include") && arg.size() == 8))
+                    if (arg.length() == 2 || (arg.starts_with("-include") && arg.size() == 8))
                         next_arg_type = FLAG;
                 }
             }
             else {
                 if (next_arg_type == INPUT) {
-                    if (auto type = SourceFile::get_type(arg)) files.emplace_back(context, arg, *type);
-                    else if (fs::is_directory(arg)) add_source_directory(arg);
-                    else context.log_error("Unknown input supplied: ", arg, "");
+                    if (auto type = SourceFile::get_type(arg))
+                        files.emplace_back(context, arg, *type);
+                    else if (!add_source_directory(arg))
+                        context.log_error("Unknown input supplied: ", arg);
                 }
                 else if (next_arg_type == PCH)
-                    files.emplace_back(context, arg, SourceFile::HEADER); // TODO: should actually be PCH.
+                    files.emplace_back(context, arg, SourceFile::PCH);
                 else if (next_arg_type == OUTPUT)
                     context.output_file = arg;
                 else
@@ -179,11 +179,12 @@ struct Main {
         get_system_include_dirs();
     }
 
-    void add_source_directory( const std::string_view& dir ) {
+    bool add_source_directory( const std::string_view& dir ) {
         std::error_code err;
         for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir, err))
             if (auto type = SourceFile::get_type(dir_entry.path().native()))
                 files.emplace_back(context, dir_entry.path(), *type);
+        return !err;
     }
 
     void get_system_include_dirs() {
@@ -225,7 +226,7 @@ public:
                         module_map.emplace(f.module_name, &f);
                     else {
                         context.log_error("There are multiple implementations for module ", f.module_name,
-                            "(in \"", it->second->source_path, "\" and \"", f.source_path, "\")");
+                            "(in ", it->second->source_path, " and ", f.source_path, ")");
                         return false;
                     }
                 }
@@ -278,7 +279,7 @@ public:
                         file.dependencies_count++;
                     }
                     else {
-                        context.log_error("Module ", module, " imported in \"", file.source_path, "\" does not exist");
+                        context.log_error("Module ", module, " imported in ", file.source_path, " does not exist");
                     }
                 }
             }
@@ -340,9 +341,16 @@ public:
             context.log_clear_task();
 
             bool everything_compiled = true;
-            for (SourceFile& file : files)
-                if (file.compiled_dependencies != file.dependencies_count)
-                    everything_compiled = false;
+            for (SourceFile& file : files) {
+                if (file.compiled_dependencies != file.dependencies_count) {
+                    if (everything_compiled) {
+                        everything_compiled = false;
+                        context.log_error("\nFailed to compile files:");
+                    }
+                    context.log_error(' ', file.source_path, " (",
+                        file.compiled_dependencies, '/' , file.dependencies_count, ')');
+                }
+            }
             return everything_compiled;
         }
 
@@ -381,10 +389,8 @@ public:
         }
         {
             Compiler compiler{context, files, context.job_count};
-            if (!compiler.compile_files(compile_count)) {
-                context.log_error("\nFailed to compile all files");
+            if (!compiler.compile_files(compile_count))
                 return false;
-            }
         }
 
         bool do_link = compile_count != 0u || !fs::exists(context.output_file);
@@ -408,7 +414,7 @@ public:
                 context.log_info(link_command.view());
 
             if (int err = system(link_command.view().data())) {
-                context.log_error("Error linking to", context.output_file, ':', err);
+                context.log_error("Error linking to ", context.output_file, ": ", err);
                 return false;
             }
         }
@@ -478,7 +484,7 @@ public:
         // Open the created shared library.
         link_map* handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (handle == nullptr)
-            context.log_error("Error loading test application:", dlerror());
+            context.log_error("Error loading test application: ", dlerror());
         typedef void (*Func)(void);
         std::vector<std::pair<const char*, Func>> test_functions;
         std::string_view str_table = get_string_table(handle);
@@ -499,7 +505,7 @@ public:
                     }
                 }
 
-        context.log_info("Running", test_functions.size(), "tests");
+        context.log_info("Running ", test_functions.size(), " tests");
         context.log_set_task("TESTING", test_functions.size());
         ThreadPool pool(context.job_count);
         for (auto [name, func]: test_functions)
