@@ -366,17 +366,18 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     // Run the command, and exit when interrupted.
     int err = system(build_command.c_str());
     compilation_failed = err != 0;
-    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
-        exit(1);
-
-    latest_obj = output_path;
     if (live_compile)
         context.temporary_files.push_back(latest_obj);
+
+    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
+        exit(1); // TODO: this is ugly, we have to shut down gracefully.
 
     if (compilation_failed) {
         context.log_info("Error compiling ", compiled_path, ": ", err);
         return false;
     }
+
+    latest_obj = output_path;
 
     std::error_code err_code;
     compiled_time = fs::last_write_time(compiled_path, err_code);

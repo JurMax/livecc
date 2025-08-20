@@ -357,21 +357,19 @@ public:
                         if (file.compilation_failed)
                             context.log_error(' ', file.source_path);
                 }
-
-                bool circular_dependency_found = false;
-                for (SourceFile& file : files) {
-                    if (file.compiled_dependencies != file.dependencies_count) {
-                        if (depends_on(file, file)) {
-                            if (!circular_dependency_found) {
-                                circular_dependency_found = true;
-                                context.log_info();
-                                context.log_error_title("circular dependencies found:");
+                else {
+                    context.log_info();
+                    context.log_error_title("circular dependencies found:");
+                    for (SourceFile& file : files) {
+                        if (file.compiled_dependencies != file.dependencies_count) {
+                            if (depends_on(file, file)) {
+                                std::cout << " ";
+                                depends_on_print(file, file);
+                                std::cout << " -> " << file.source_path << std::endl;
                             }
-                            std::cout << " ";
-                            depends_on_print(file, file);
-                            std::cout << " -> " << file.source_path << std::endl;
                         }
                     }
+                    // TODO: can we be sure the compilation failed due to circular dependencies?
                 }
             }
 
