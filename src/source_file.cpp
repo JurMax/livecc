@@ -355,7 +355,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     std::string build_command = get_build_command(context, live_compile, &output_path);
 
     std::string print_command = context.verbose ? build_command : "";
-    context.log_info("Compiling ", source_path, " to ", output_path, print_command);
+    context.log_info("Compiling ", source_path, " to ", output_path, ", ", print_command);
 
     // Create a fake hpp file to contain the system header.
     if (type == SYSTEM_HEADER) {
@@ -379,6 +379,9 @@ bool SourceFile::compile(Context& context, bool live_compile) {
         return true;
     }
 
+    std::error_code err_code;
+    compiled_time = fs::last_write_time(compiled_path, err_code);
+
     if (type == MODULE) {
         // Create a symlink to the module.
         fs::path symlink = context.modules_directory / (module_name + ".pcm");
@@ -386,8 +389,6 @@ bool SourceFile::compile(Context& context, bool live_compile) {
         fs::create_symlink(fs::relative(output_path, context.modules_directory), symlink);
     }
 
-    if (live_compile)
-        context.log_info("Done!");
     return false;
 }
 

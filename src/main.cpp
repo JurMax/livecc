@@ -477,6 +477,7 @@ public:
             // TODO: only recompile the actual function that has been changed.
             file.compile(context, true);
             file.replace_functions(context);
+            context.log_info("Done!");
         }
     }
 
