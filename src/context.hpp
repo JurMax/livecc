@@ -44,6 +44,7 @@ struct Context {
 
     std::string build_command;
     std::vector<std::string_view> build_include_dirs;
+    std::vector<fs::path> system_include_dirs;
 
     std::string link_arguments;
 
@@ -56,7 +57,7 @@ struct Context {
     std::vector<void*> loaded_handles;
     std::vector<fs::path> temporary_files;
 
-private:
+public:
     std::mutex print_mutex;
     std::string task_name;
     int bar_task_current;
@@ -64,7 +65,7 @@ private:
     int term_width;
 
 public:
-    Context() {
+    inline Context() {
         struct winsize w;
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
         term_width = w.ws_col;

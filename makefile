@@ -1,9 +1,10 @@
 SRC := src/livecc.cpp src/source_file.cpp src/plthook/plthook_elf.c
 OBJ := $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(SRC)))
 
-CC := clang++ -std=c++23 -Wall -O3
+ARGS := -std=c++23 -Wall -O3
+CC := clang++ ${ARGS}
 
-%.o: %.cpp src/globals.hpp src/source_file.hpp
+%.o: %.cpp src/context.hpp src/source_file.hpp
 	${CC} -c $< -o $@
 
 %.o: %.c
@@ -11,6 +12,12 @@ CC := clang++ -std=c++23 -Wall -O3
 
 main: $(OBJ)
 	${CC} $(OBJ) -o livecc
+
+test: main
+	./livecc ${ARGS} -lstdc++ src
+
+db: main
+	gdb -ex run --args ./livecc src
 
 clean:
 	rm src/*.o livecc

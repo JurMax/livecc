@@ -1,46 +1,38 @@
 #pragma once
-#include "globals.hpp"
+#include "context.hpp"
 
+#include <map>
 #include <set>
 #include <filesystem>
-#include <set>
 #include <atomic>
-#include <unordered_map>
+#include <optional>
 
 namespace fs = std::filesystem;
-
-struct InitData {
-    // Store the library header file file times here, so we
-    // don't have to keep checking them for changes.
-    std::unordered_map<fs::path, fs::file_time_type> file_changes;
-    std::mutex mutex;
-    std::set<fs::path> system_headers;
-};
 
 struct SourceFile {
     enum type_t {
         UNIT,
-        PCH,
-        SYSTEM_PCH,
+        HEADER,
+        SYSTEM_HEADER,
         MODULE,
-        // HEADER_UNIT,
     };
-
-    fs::path source_path;
-    fs::path compiled_path;
 
     type_t type;
 
-    std::optional<fs::file_time_type> last_write_time;
+    fs::path source_path; // always relative to the working directory.
+    fs::path compiled_path;
 
-    fs::path latest_dll;
+    fs::file_time_type source_time;
+    std::optional<fs::file_time_type> compiled_time;
+    bool has_changed = false;
+    bool need_compile = false;
+    bool visited = false;
 
     // TODO: implement this. Also add support for header units. Used header units
     // should also be added to the source files with the header unit type
-    std::string module_name; // if type == MODULE.
+    std::string module_name; // only set for modules.
 
-    std::set<fs::path> header_dependencies;
-    std::set<std::string> system_header_dependencies;
+    std::map<fs::path, type_t> header_dependencies;
     std::set<std::string> module_dependencies;
     std::string build_pch_includes; // pch includes to add to the build command.
 
@@ -51,32 +43,26 @@ struct SourceFile {
     std::vector<SourceFile*> dependent_files;
 
     std::atomic<int> compiled_dependencies; // When this is equal to dependencies_count, we can compile.
-    int dependencies_count;
+    int dependencies_count = 0;
+
+    // RUNTIME.
+    fs::path latest_dll;
 
 public:
-    SourceFile(const fs::path& path, type_t type = UNIT);
-    SourceFile(SourceFile&& other);
+    SourceFile(const Context& context, const fs::path& path, type_t type);
 
-    // Returns true if it must be compiled.
-    bool load_dependencies(Context& context, InitData& init_data);
+    static std::optional<type_t> get_type( const std::string_view& path );
 
-    inline bool is_header() const { return type == PCH || type == SYSTEM_PCH; }
+    inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER; }
 
-private:
-    void create_dependency_files(Context& context, const fs::path& dependencies_path, const fs::path& modules_path);
-
-    // Load the modules .md file.
-    void load_module_dependencies(const fs::path& path);
-    std::optional<fs::file_time_type> load_header_dependencies(Context& context, const fs::path& path, InitData& init_data);
-
-public:
     // Read the dependencies directly from the file.
     void read_dependencies(Context& context);
 
 public:
+    /** Check if the file has changed since compilation. */
     bool has_source_changed();
 
-    std::string get_build_command(const Context& context, bool live_compile = false, fs::path* output_path = nullptr);
+    std::string get_build_command(const Context& context, bool live_compile, fs::path* output_path);
 
     // Returns true if an error occurred.
     bool compile(Context& context, bool live_compile = false);
@@ -86,3 +72,7 @@ public:
 
 // Get the table of string from a link map handle.
 std::string_view get_string_table(link_map* handle);
+
+
+// bool file_exists(const char* path);
+// std::optional<timespec> get_write_time(const char* path);
