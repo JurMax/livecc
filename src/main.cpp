@@ -359,6 +359,7 @@ struct Main {
                     if (dir[0] == '"' && dir[dir.length() - 1] == '"')
                         dir = dir.substr(1, dir.length() - 2);
                     context.build_include_dirs.push_back(dir);
+                    build_command << "-I\"" << dir << "\" ";
                 }
                 else if (arg.starts_with("--pch")) {
                     if (arg.length() == 5) next_arg_type = PCH;
@@ -371,6 +372,8 @@ struct Main {
                 else if (arg == "--test") context.test = true;
                 else if (arg == "--no-header-units") context.use_header_units = false;
                 else if (arg == "--header-units") context.use_header_units = true;
+                else if (arg.starts_with("-std=c++")) context.cpp_version = arg;
+                else if (arg.starts_with("-std=c")) context.c_version = arg;
                 else {
                     build_command << arg << ' ';
 
@@ -416,10 +419,6 @@ struct Main {
             }
             context.output_file = context.output_file.parent_path() / new_filename;
         }
-
-        // Create the temporary and the modules directories.
-        context.modules_directory = context.output_directory / "modules";
-        // build_command << " -fprebuilt-module-path=" << context.modules_directory;
 
         if (context.build_type == LIVE || context.build_type == SHARED) {
             build_command << "-fPIC ";
@@ -489,19 +488,28 @@ struct Main {
     }
 
     bool have_build_args_changed() {
+        std::vector<char> build_command;
+        build_command.reserve(context.build_command.size()
+            + context.cpp_version.size() + context.c_version.size() + 2);
+        build_command.append_range(context.build_command);
+        build_command.append_range(context.cpp_version);
+        build_command.push_back(' ');
+        build_command.append_range(context.c_version);
+        build_command.push_back(' ');
+
         // Read build args from file.
-        fs::path command_file = (context.output_directory / "command.txt");
+        fs::path command_file = context.output_directory / "command.txt";
         if (FILE* f = fopen(command_file.c_str(), "rb")) {
             char buff[256];
             bool changed = false;
             size_t count, i = 0;
             while ((count = fread(buff, 1, sizeof(buff), f)))
                 for (size_t j = 0; j != count; ++j, ++i)
-                    if (i == context.build_command.size() || buff[j] != context.build_command[i]) {
+                    if (i == build_command.size() || buff[j] != build_command[i]) {
                         changed = true;
                         goto stop;
                     }
-            if (i != context.build_command.size())
+            if (i != build_command.size())
                 changed = true;
         stop:
             fclose(f);
@@ -511,7 +519,7 @@ struct Main {
 
         // Write the new build file.
         if (FILE* f = fopen(command_file.c_str(), "wb")) {
-            fwrite(context.build_command.c_str(), 1, context.build_command.length(), f);
+            fwrite(build_command.data(), 1, build_command.size(), f);
             fclose(f);
         }
 
@@ -531,7 +539,6 @@ struct Main {
             std::ofstream compile_commands("compile_commands.json");
             std::string dir_string = "\t\t\"directory\": \"" + context.working_directory.native() + "\",\n";
             compile_commands << "[\n";
-            fs::path output_path;
 
             bool first = true;
             for (SourceFile& file : files) {
@@ -544,7 +551,7 @@ struct Main {
                 compile_commands << dir_string;
                 compile_commands << "\t\t\"command\": \"";
                 // TODO: dont use the full build command, its way too big
-                std::string command = file.get_build_command(context, false, &output_path);
+                std::string command = file.get_build_command(context);
                 for (char c : command) {
                     if (c == '"')
                         compile_commands.put('\\');

@@ -63,6 +63,7 @@ public:
 
     inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER || type == C_HEADER || type == C_SYSTEM_HEADER; }
     inline bool is_include() const { return is_header() || type == PCH || type == BARE_INCLUDE; }
+    inline bool is_c_file() const { return type == C_UNIT || type == C_HEADER; }
 
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(const Context& context);
@@ -74,7 +75,10 @@ public:
     /** Check if the file has changed since compilation. */
     bool has_source_changed();
 
-    std::string get_build_command(const Context& context, bool live_compile, fs::path* output_path);
+    std::string get_build_command(const Context& context, const fs::path& output_path, bool live_compile);
+    inline std::string get_build_command(const Context& context) {
+        return get_build_command(context, compiled_path, false);
+    }
 
     // Returns true if no errors occurred.
     bool compile(Context& context, bool live_compile = false);

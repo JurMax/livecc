@@ -337,37 +337,18 @@ bool SourceFile::has_source_changed() {
     return false;
 }
 
-std::string SourceFile::get_build_command(const Context& context, bool live_compile, fs::path* output_path) {
-    // Get/set the output path.
-    fs::path output_path_owned;
-    if (output_path == nullptr)
-        output_path = &output_path_owned;
-
-    // TODO: dont be weird about this.
-    bool create_temporary_object = live_compile && type == UNIT;
-    *output_path = !create_temporary_object ? compiled_path
-        : context.output_directory / "tmp"
-            / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
-
+std::string SourceFile::get_build_command(const Context& context, const fs::path& output_path, bool live_compile) {
     if (type == BARE_INCLUDE || (!context.use_header_units && is_header()))
-        return std::format("touch \"{}\"", compiled_path.native());
+        return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
     command << context.build_command;
+    command << (is_c_file() ? context.c_version : context.cpp_version) << ' ';
 
-    // Add include directories to the build command, with possible compiled dirs.
-    for (const std::string_view& dir : context.build_include_dirs) {
-        // if (output_path != nullptr)
-            // command << " -I\"" << dll.output_directory.string() << '/' << dir << '"';
-        command << "-I\"" << dir << "\" ";
-    }
-
-    // Include the parent dir of every file.
     if (context.include_source_parent_dir) {
         if (source_path.has_parent_path())
             command << "-I\"" << source_path.parent_path().native() << "\" ";
-        else
-            command << "-I. ";
+        else command << "-I. ";
     }
 
     command << std::string_view{build_includes.data(), build_includes.size()};
@@ -383,10 +364,8 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
     else if (type == C_SYSTEM_HEADER)
         command << "-xc-system-header --precompile ";
     else if (!live_compile) {
-        if (type == MODULE)
-            command << "--precompile ";
-        else
-            command << "-c ";
+        if (type == MODULE) command << "--precompile ";
+        else command << "-c ";
     }
     else {
         command << "-shared ";
@@ -394,15 +373,24 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
             command << "-O0 ";
     }
 
-    command << "-o \"" << output_path->native() << "\" \"" << source_path.native() << '"';
-    // command << "-o " << output_path->native() << " " << source_path.native();
+    command << "-o \"" << output_path.native() << "\" \"" << source_path.native() << '"';
     return command.str();
 }
 
 // Returns true if an error occurred.
 bool SourceFile::compile(Context& context, bool live_compile) {
+
+    // Get the output path. This differs from compile_path if live compile is true.
     fs::path output_path;
-    std::string build_command = get_build_command(context, live_compile, &output_path);
+    bool do_live_compile = live_compile && type == UNIT;
+    if (do_live_compile) {
+        output_path = context.output_directory / "tmp"
+            / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
+        context.temporary_files.push_back(latest_obj);
+    }
+    else output_path = compiled_path;
+
+    std::string build_command = get_build_command(context, output_path, do_live_compile);
 
     if (context.verbose)
         context.log_info("Compiling ", source_path, " to ", output_path, " using: ", build_command);
@@ -412,22 +400,16 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     // Run the command, and exit when interrupted.
     int err = system(build_command.c_str());
     compilation_failed = err != 0;
-    if (live_compile)
-        context.temporary_files.push_back(latest_obj);
 
     if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
         exit(1); // TODO: this is ugly, we have to shut down gracefully.
 
-    if (compilation_failed) {
-        // context.log_info("Error compiling ", compiled_path, ": ", err);
+    if (compilation_failed)
         return false;
-    }
 
     latest_obj = output_path;
-
     std::error_code err_code;
     compiled_time = fs::last_write_time(compiled_path, err_code);
-
     return true;
 }
 
