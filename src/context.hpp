@@ -50,6 +50,7 @@ struct Context {
     std::string_view c_version = "-std=c17";
 
     std::string link_arguments;
+    bool custom_linker_set = false;
 
     // The amount of files to compile in parallel.
     int job_count = 0;

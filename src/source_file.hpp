@@ -15,9 +15,9 @@ struct SourceFile {
         C_UNIT,          // A C source file/translation unit TODO
         MODULE,          // A C++ module, gets compiled twice.
         HEADER,          // Compiled as header unit
-        C_HEADER = HEADER,        // Compiled as header unit
+        C_HEADER,        // Compiled as header unit
         SYSTEM_HEADER,   // compiled as header unit
-        C_SYSTEM_HEADER = SYSTEM_HEADER, // compiled as header unit
+        C_SYSTEM_HEADER, // compiled as header unit
         PCH,             // There can be only 1 pch
         BARE_INCLUDE,    // Not compiled, only included
     };

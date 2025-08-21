@@ -84,7 +84,7 @@ struct DependencyTreeBuilder {
             // Make all files depend on the PCH
             if (f.type == SourceFile::PCH)
                 for (SourceFile& i : files)
-                    if (&i != &f)
+                    if (&i != &f && !i.is_c_file())
                         i.include_dependencies.insert_or_assign(f.source_path, SourceFile::PCH);
         }
 
@@ -329,7 +329,7 @@ struct Main {
         context.output_file = "build/a.out";
         std::ostringstream build_command;
         std::ostringstream link_arguments;
-        build_command << "clang++ "; // TODO add C support.
+        build_command << "clang ";
 
         enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
 
@@ -374,6 +374,10 @@ struct Main {
                 else if (arg == "--header-units") context.use_header_units = true;
                 else if (arg.starts_with("-std=c++")) context.cpp_version = arg;
                 else if (arg.starts_with("-std=c")) context.c_version = arg;
+                else if (arg.starts_with("-fuse-ld=")) {
+                    link_arguments << arg << ' ';
+                    context.custom_linker_set = true;
+                }
                 else {
                     build_command << arg << ' ';
 
@@ -474,7 +478,8 @@ struct Main {
         // TODO: maybe cache this, only check if clang file write time changes on startup.
         char buf[4096];
         FILE* pipe = popen("echo | clang -xc++ -E -v - 2>&1 >/dev/null", "r");
-        if (pipe == NULL)
+        FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
+        if (pipe == nullptr)
             return false;
         while (fgets(buf, sizeof(buf), pipe) != nullptr) {
             if (buf[0] == ' ' && buf[1] == '/') {
@@ -484,6 +489,10 @@ struct Main {
                 context.system_include_dirs.push_back(buf + 1);
             }
         }
+
+        // Check if mold exists, and use it as the default linker if it does.
+        if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
+            context.link_arguments += "-fuse-ld=mold ";
         return pclose(pipe) == 0;
     }
 

@@ -228,7 +228,7 @@ SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type
     if (i != std::string_view::npos) {
         std::string_view ext = path.substr(i + 1);
         if (ext == "c") return {C_UNIT};
-        if (ext == "h") return {C_HEADER};
+        if (ext == "h") return {HEADER};//{C_HEADER}; a lot of people use .h for C++ headers too.
         if (ext == "cppm") return {MODULE};
         constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
         constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H"};
@@ -256,9 +256,9 @@ void SourceFile::set_compile_path(const Context& context) {
         case MODULE:
             compiled_path += ".o"; break;
         case HEADER:
-        // case C_HEADER:
+        case C_HEADER:
         case SYSTEM_HEADER:
-        // case C_SYSTEM_HEADER:
+        case C_SYSTEM_HEADER:
             compiled_path += context.use_header_units ? ".pcm" : ".timestamp"; break;
         case PCH:
             compiled_path += ".gch"; break;
