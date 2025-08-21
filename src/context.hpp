@@ -38,6 +38,7 @@ struct Context {
     // Command line arguments.
     build_type_t build_type = LIVE;
     bool include_source_parent_dir = true;
+    bool use_header_units = true;
     bool rebuild_with_O0 = false;
     bool verbose = false;
     bool test = false;

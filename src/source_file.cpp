@@ -7,6 +7,7 @@
 #include <link.h>
 #include <string_view>
 #include <system_error>
+#include <format>
 
 #include "plthook/plthook.h"
 
@@ -90,7 +91,7 @@ struct Parser {
         include_read_bracket: switch (c = read_char()) {
             case '>':
                 buffer[buf_len] = '\0';
-                file.header_dependencies.emplace(buffer, SourceFile::SYSTEM_HEADER);
+                file.include_dependencies.emplace(buffer, SourceFile::SYSTEM_HEADER);
                 goto token;
             case EOF: return UNEXPECTED_END;
             default:
@@ -207,7 +208,10 @@ struct Parser {
     bool try_add_include(const Context& context, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
-            file.header_dependencies.emplace(normalise_path(context, path), SourceFile::HEADER);
+            auto type = SourceFile::get_type(path.native());
+            if (!type || (*type != SourceFile::HEADER && *type != SourceFile::C_HEADER))
+                type = SourceFile::BARE_INCLUDE;
+            file.include_dependencies.emplace(normalise_path(context, path), *type);
             return true;
         }
         return false;
@@ -223,27 +227,44 @@ SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type
     size_t i = path.find_last_of('.');
     if (i != std::string_view::npos) {
         std::string_view ext = path.substr(i + 1);
-        if (ext == "c" || ext == "cpp")
-            return {UNIT};
-        else if (ext == "h" || ext == "hpp")
-            return {HEADER};
-        else if (ext == "cppm")
-            return {MODULE};
+        if (ext == "c") return {C_UNIT};
+        if (ext == "h") return {C_HEADER};
+        if (ext == "cppm") return {MODULE};
+        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
+        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H"};
+        for (size_t i = 0; i < 8; ++i) {
+            if (ext == unit_ext[i]) return {UNIT};
+            if (ext == head_ext[i]) return {HEADER};
+        }
     }
     return {};
 }
 
 void SourceFile::set_compile_path(const Context& context) {
-    if (type == SYSTEM_HEADER) {
+    if (type == SYSTEM_HEADER)
         compiled_path = context.output_directory / "system" / source_path;
-        compiled_path += ".gch";
-    }
     else {
         const char* path = source_path.c_str();
         if (source_path.is_absolute())
             path += source_path.root_path().native().size();
         compiled_path = context.output_directory / path;
-        compiled_path += is_header() ? ".gch" : ".o";
+    }
+
+    switch (type) {
+        case UNIT:
+        case C_UNIT:
+        case MODULE:
+            compiled_path += ".o"; break;
+        case HEADER:
+        // case C_HEADER:
+        case SYSTEM_HEADER:
+        // case C_SYSTEM_HEADER:
+            compiled_path += context.use_header_units ? ".pcm" : ".timestamp"; break;
+        case PCH:
+            compiled_path += ".gch"; break;
+        case BARE_INCLUDE:
+            compiled_path += ".timestamp";
+            break;
     }
 }
 
@@ -258,14 +279,15 @@ void SourceFile::read_dependencies(Context& context) {
         for (const std::string_view& dir : context.build_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
-                break;
+                goto found_file;
         }
         // Check the system header write time by going through all the options.
         for (const fs::path& dir : context.system_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
-                break;
+                goto found_file;
         }
+        found_file: ;
     }
     else {
         source_write_time = fs::last_write_time(source_path, err);
@@ -302,14 +324,13 @@ void SourceFile::read_dependencies(Context& context) {
 
 
 bool SourceFile::has_source_changed() {
-    if (is_header())
+    if (is_include())
         return false;
     std::error_code err;
     fs::file_time_type new_write_time = fs::last_write_time(source_path, err);
     if (err)
         return true;
     if (!compiled_time || *compiled_time < new_write_time) {
-        std::cout << source_path << " changed!\n";
         compiled_time = new_write_time;
         return true;
     }
@@ -317,6 +338,20 @@ bool SourceFile::has_source_changed() {
 }
 
 std::string SourceFile::get_build_command(const Context& context, bool live_compile, fs::path* output_path) {
+    // Get/set the output path.
+    fs::path output_path_owned;
+    if (output_path == nullptr)
+        output_path = &output_path_owned;
+
+    // TODO: dont be weird about this.
+    bool create_temporary_object = live_compile && type == UNIT;
+    *output_path = !create_temporary_object ? compiled_path
+        : context.output_directory / "tmp"
+            / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
+
+    if (type == BARE_INCLUDE || (!context.use_header_units && is_header()))
+        return std::format("touch \"{}\"", compiled_path.native());
+
     std::ostringstream command;
     command << context.build_command;
 
@@ -326,29 +361,27 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
             // command << " -I\"" << dll.output_directory.string() << '/' << dir << '"';
         command << "-I\"" << dir << "\" ";
     }
-    if (output_path != nullptr)
-        command << build_pch_includes; // TODO: add modules and header here.
-
-    // Get/set the output path.
-    fs::path output_path_owned;
-    if (output_path == nullptr)
-        output_path = &output_path_owned;
-
-    bool create_temporary_object = live_compile && output_path != nullptr && type == UNIT;
-    *output_path = !create_temporary_object ? compiled_path
-        : context.output_directory / "tmp"
-            / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
 
     // Include the parent dir of every file.
     if (context.include_source_parent_dir) {
         if (source_path.has_parent_path())
-            command << "-I" << source_path.parent_path().native() << " ";
+            command << "-I\"" << source_path.parent_path().native() << "\" ";
         else
             command << "-I. ";
     }
 
-    if (is_header())
-        command << "-c -x c++-header ";
+    command << std::string_view{build_includes.data(), build_includes.size()};
+
+    if (type == PCH)
+        command << "-xc++-header -c ";
+    else if (type == HEADER)
+        command << "-xc++-user-header --precompile ";
+    else if (type == C_HEADER)
+        command << "-xc-user-header --precompile ";
+    else if (type == SYSTEM_HEADER)
+        command << "-xc++-system-header --precompile ";
+    else if (type == C_SYSTEM_HEADER)
+        command << "-xc-system-header --precompile ";
     else if (!live_compile) {
         if (type == MODULE)
             command << "--precompile ";
@@ -361,12 +394,8 @@ std::string SourceFile::get_build_command(const Context& context, bool live_comp
             command << "-O0 ";
     }
 
-    command << "-o " << output_path->native() << " ";
-
-    if (type == SYSTEM_HEADER)
-        command << compiled_path.native() << ".hpp";
-    else
-        command << source_path.native();
+    command << "-o \"" << output_path->native() << "\" \"" << source_path.native() << '"';
+    // command << "-o " << output_path->native() << " " << source_path.native();
     return command.str();
 }
 
@@ -375,14 +404,10 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     fs::path output_path;
     std::string build_command = get_build_command(context, live_compile, &output_path);
 
-    std::string print_command = context.verbose ? build_command : "";
-    context.log_info("Compiling ", source_path, " to ", output_path, ", ", print_command);
-
-    // Create a fake hpp file to contain the system header.
-    if (type == SYSTEM_HEADER) {
-        std::ofstream h(compiled_path.native() + ".hpp");
-        h << "#pragma once\n#include <" << source_path.native() << ">\n";
-    }
+    if (context.verbose)
+        context.log_info("Compiling ", source_path, " to ", output_path, " using: ", build_command);
+    else
+        context.log_info("Compiling ", source_path, " to ", output_path);
 
     // Run the command, and exit when interrupted.
     int err = system(build_command.c_str());
@@ -394,7 +419,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
         exit(1); // TODO: this is ugly, we have to shut down gracefully.
 
     if (compilation_failed) {
-        context.log_info("Error compiling ", compiled_path, ": ", err);
+        // context.log_info("Error compiling ", compiled_path, ": ", err);
         return false;
     }
 
@@ -402,13 +427,6 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 
     std::error_code err_code;
     compiled_time = fs::last_write_time(compiled_path, err_code);
-
-    if (type == MODULE) {
-        // Create a symlink to the module.
-        fs::path symlink = context.modules_directory / (module_name + ".pcm");
-        fs::remove(symlink);
-        fs::create_symlink(fs::relative(output_path, context.modules_directory), symlink);
-    }
 
     return true;
 }
