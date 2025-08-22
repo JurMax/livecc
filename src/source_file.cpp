@@ -24,6 +24,12 @@ static fs::path normalise_path(const Context& context, const fs::path& path) {
         return absolute_path;
 }
 
+/**
+ * Get all the include and imports by reading the given file,
+ * as well as the module name if it's there.
+ * This parser is not checking for valid C/C++ code, it just tries
+ * to extract the includes and modules in the fastest possible way.
+ */
 struct Parser {
     enum Return { OK, OPEN_FAILED, UNEXPECTED_END, PATH_TOO_LONG };
 
@@ -239,11 +245,10 @@ void SourceFile::set_compile_path(const Context& context) {
 }
 
 void SourceFile::read_dependencies(Context& context) {
-    std::error_code err;
-
     if (compiled_path.empty())
         set_compile_path(context);
 
+    std::error_code err;
     fs::file_time_type source_write_time;
     if (type == SYSTEM_HEADER) {
         // Check the system header write time by going through all the options.
@@ -343,6 +348,11 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
     return command.str();
 }
 
+std::string_view SourceFile::pch_include() {
+     // remove ".gch"
+    return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
+}
+
 // Returns true if an error occurred.
 bool SourceFile::compile(Context& context, bool live_compile) {
 
@@ -356,6 +366,9 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     }
     else output_path = compiled_path;
 
+    if (type == SourceFile::PCH)
+        std::ofstream{fs::path{pch_include()}} << "#error PCH not included\n";
+
     std::string build_command = get_build_command(context, output_path, do_live_compile);
 
     if (context.verbose)
@@ -365,7 +378,8 @@ bool SourceFile::compile(Context& context, bool live_compile) {
 
     // Run the command, and exit when interrupted.
     int err = system(build_command.c_str());
-    compilation_failed = err != 0;
+    if (err != 0)
+        compilation_failed = true;
 
     if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
         exit(1); // TODO: this is ugly, we have to shut down gracefully.

@@ -78,9 +78,12 @@ public:
         return get_build_command(context, compiled_path, false);
     }
 
+    std::string_view pch_include();
+
     // Returns true if no errors occurred.
     bool compile(Context& context, bool live_compile = false);
     void replace_functions(Context& context);
+
 };
 
 

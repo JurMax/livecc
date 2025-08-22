@@ -122,8 +122,8 @@ private:
                 SourceFile::type_t actual_type = it->second->type;
 
                 if (actual_type == SourceFile::PCH && actual_type != SourceFile::SYSTEM_HEADER) {
-                    file.build_includes.append_range(std::string_view{"-include-pch \""});
-                    file.build_includes.append_range(it->second->compiled_path.native());
+                    file.build_includes.append_range(std::string_view{"-include \""});
+                    file.build_includes.append_range(it->second->pch_include());
                     file.build_includes.append_range(std::string_view{"\" "});
                 }
                 else if (context.use_header_units

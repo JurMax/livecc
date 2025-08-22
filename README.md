@@ -14,5 +14,6 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Test what happens with missing files and what should happen
 - Multiple PCH? --pch then applies to all files defined after it, or everything if only one is defined at all.
 - Support C style pch
+- Allow changing the compiler from clang to other things like gcc.
 
 - More sensible default warning maybe?
