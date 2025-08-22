@@ -15,9 +15,7 @@ struct SourceFile {
         C_UNIT,          // A C source file/translation unit TODO
         MODULE,          // A C++ module, gets compiled twice.
         HEADER,          // Compiled as header unit
-        C_HEADER,        // Compiled as header unit
         SYSTEM_HEADER,   // compiled as header unit
-        C_SYSTEM_HEADER, // compiled as header unit
         PCH,             // There can be only 1 pch
         BARE_INCLUDE,    // Not compiled, only included
     };
@@ -40,6 +38,7 @@ struct SourceFile {
     std::string module_name; // only set for modules.
 
     // Type can be HEADER, SYSTEM_HEADER or INCLUDED_UNIT
+    // TODO: do these have to be a map and a set? Double dependencies should be fine.
     std::map<fs::path, type_t> include_dependencies;
     std::set<std::string> module_dependencies;
     std::vector<char> build_includes; // module includes to add to the build command.
@@ -61,9 +60,8 @@ public:
 
     static std::optional<type_t> get_type(const std::string_view& path);
 
-    inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER || type == C_HEADER || type == C_SYSTEM_HEADER; }
+    inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER; }
     inline bool is_include() const { return is_header() || type == PCH || type == BARE_INCLUDE; }
-    inline bool is_c_file() const { return type == C_UNIT || type == C_HEADER; }
 
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(const Context& context);

@@ -14,6 +14,7 @@
 #include "thread_pool.hpp"
 #include "context.hpp"
 #include "source_file.hpp"
+#include <charconv>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -73,7 +74,7 @@ struct DependencyTreeBuilder {
                 if (it == module_map.end())
                     module_map.emplace(f.module_name, &f);
                 else {
-                    context.log_error("There are multiple implementations for module ", f.module_name,
+                    context.log_error("there are multiple implementations for module ", f.module_name,
                         "(in ", it->second->source_path, " and ", f.source_path, ")");
                     return false;
                 }
@@ -84,7 +85,7 @@ struct DependencyTreeBuilder {
             // Make all files depend on the PCH
             if (f.type == SourceFile::PCH)
                 for (SourceFile& i : files)
-                    if (&i != &f && !i.is_c_file())
+                    if (i.type == SourceFile::UNIT || i.type == SourceFile::MODULE || i.type == SourceFile::HEADER)
                         i.include_dependencies.insert_or_assign(f.source_path, SourceFile::PCH);
         }
 
@@ -120,20 +121,16 @@ private:
 
                 SourceFile::type_t actual_type = it->second->type;
 
-                if (actual_type == SourceFile::PCH) {
-                    file.build_includes.append_range("-include-pch \"");
-                    file.build_includes.pop_back();
+                if (actual_type == SourceFile::PCH && actual_type != SourceFile::SYSTEM_HEADER) {
+                    file.build_includes.append_range(std::string_view{"-include-pch \""});
                     file.build_includes.append_range(it->second->compiled_path.native());
-                    file.build_includes.append_range("\" ");
-                    file.build_includes.pop_back();
+                    file.build_includes.append_range(std::string_view{"\" "});
                 }
                 else if (context.use_header_units
                     && (actual_type == SourceFile::HEADER || actual_type == SourceFile::SYSTEM_HEADER)) {
-                    file.build_includes.append_range("-fmodule-file=\"");
-                    file.build_includes.pop_back();
+                    file.build_includes.append_range(std::string_view{"-fmodule-file=\""});
                     file.build_includes.append_range(it->second->compiled_path.native());
-                    file.build_includes.append_range("\" ");
-                    file.build_includes.pop_back();
+                    file.build_includes.append_range(std::string_view{"\" "});
                 }
 
                 it->second->dependent_files.push_back(&file);
@@ -150,7 +147,7 @@ private:
                     file.dependencies_count++;
                 }
                 else {
-                    context.log_error("Module ", module, " imported in ", file.source_path, " does not exist");
+                    context.log_error("module [", module, "] imported in ", file.source_path, " does not exist");
                 }
             }
         }
@@ -236,18 +233,18 @@ struct Compiler {
 
         if (compilations_failed) {
             context.log_info();
-            context.log_error_title("compilation failed for:");
+            context.log_error("compilation failed for:");
             for (SourceFile& file : files)
                 if (file.compilation_failed)
-                    context.log_error("        ", file.source_path);
+                    std::cout << "        " << file.source_path << std::endl;
             return false;
         }
         else if (dependencies_missing) {
             context.log_info();
-            context.log_error_title("files are missing one or more dependencies:");
+            context.log_error("files are missing one or more dependencies:");
             for (SourceFile& file : files)
                 if (file.compiled_dependencies != file.dependencies_count)
-                    context.log_error("        ", file.source_path);
+                    std::cout << "        " << file.source_path << std::endl;
 
             bool circular_dependencies = false;
             for (SourceFile& file : files) {
@@ -256,7 +253,7 @@ struct Compiler {
                         if (!circular_dependencies) {
                             circular_dependencies = true;
                             context.log_info();
-                            context.log_error_title("circular dependencies found:");
+                            context.log_error("circular dependencies found:");
                         }
                         std::cout << "        ";
                         depends_on_print(file, file);
@@ -325,6 +322,7 @@ struct Main {
 
     // Returns true if all the arguments are valid.
     bool parse_arguments(int argn, char** argv) {
+        std::error_code err;
         context.working_directory = fs::current_path();
         context.output_file = "build/a.out";
         std::ostringstream build_command;
@@ -346,10 +344,11 @@ struct Main {
                 }
                 else if (arg[1] == 'j') {
                     // Set the number of parallel threads to use.
-                    if (arg.length() == 2)
-                        context.job_count = std::stoi(argv[++i]);
-                    else
-                        context.job_count = std::stoi(argv[i] + 2);
+                    uint job_count;
+                    std::string_view value = arg.length() == 2 ? argv[++i] : arg.substr(2);
+                    if (std::from_chars(value.begin(), value.end(), job_count).ec == std::errc{})
+                        context.job_count = job_count;
+                    else context.log_error("invalid job count value: ", value);
                 }
                 else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=")) {
                     link_arguments << arg << ' ';
@@ -393,7 +392,7 @@ struct Main {
                     if (auto type = SourceFile::get_type(arg))
                         files.emplace_back(context, arg, *type);
                     else if (!add_source_directory(arg))
-                        context.log_error_title("unknown input supplied: ", arg);
+                        context.log_error("unknown input supplied: ", arg);
                 }
                 else if (next_arg_type == PCH)
                     files.emplace_back(context, arg, SourceFile::PCH);
@@ -435,7 +434,7 @@ struct Main {
 
         if (context.test) {
             if (context.build_type == STANDALONE)
-                context.log_error("Tests can't be run in standalone mode!");
+                context.log_error("tests can't be run in standalone mode!");
             else
                 build_command << "-DLCC_TEST ";
         }
@@ -462,12 +461,9 @@ struct Main {
      */
     bool initialise() {
         if (!get_system_include_dirs()) {
-            context.log_error("Couldn't find clang, is it in the path?");
+            context.log_error("couldn't find clang, is it in the path?");
             return false;
         }
-
-        // TODO: check if clang or livecc versio updated.
-
         context.build_command_changed = have_build_args_changed();
         update_compile_commands(context.build_command_changed);
         return true;
@@ -497,6 +493,9 @@ struct Main {
     }
 
     bool have_build_args_changed() {
+        // TODO: check if clang or livecc version updated by checking
+        // if their file changes is higher than command.txt
+
         std::vector<char> build_command;
         build_command.reserve(context.build_command.size()
             + context.cpp_version.size() + context.c_version.size() + 2);
@@ -612,7 +611,7 @@ struct Main {
                 context.log_info(link_command.view());
 
             if (int err = system(link_command.view().data())) {
-                context.log_error("Error linking to ", context.output_file, ": ", err);
+                context.log_error("error linking to ", context.output_file, ": ", err);
                 return false;
             }
         }
@@ -626,13 +625,13 @@ public:
         // Open the created shared library.
         context.handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (context.handle == nullptr)
-            context.log_error("Loading application failed:", dlerror());
+            context.log_error("loading application failed:", dlerror());
 
         CHK_PH(plthook_open_by_handle(&context.plthook, context.handle));
 
         set_callback_func_t* set_callback = (set_callback_func_t*)dlsym(context.handle, "setDLLCallback");
         if (set_callback == nullptr)
-            context.log_error("No setDLLCallback() found, so we can't check for file changes!");
+            context.log_info("no setDLLCallback() found, so we can't check for file changes!");
         else
             (*set_callback)(callback_func);
 
@@ -640,11 +639,11 @@ public:
         typedef int mainFunc(int, char**);
         mainFunc* main_func = (mainFunc*)dlsym(context.handle, "main");
         if (main_func == nullptr)
-            context.log_error("No main function found, so we can't start the application!");
+            context.log_info("no main function found, so we can't start the application!");
         else
             (*main_func)(0, nullptr);
 
-        context.log_info("Ending live reload session");
+        context.log_info("ending live reload session");
         close();
 
         plthook_close(context.plthook);
@@ -685,7 +684,7 @@ public:
         // Open the created shared library.
         link_map* handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (handle == nullptr)
-            context.log_error("Error loading test application: ", dlerror());
+            context.log_error("error loading test application: ", dlerror());
         typedef void (*Func)(void);
         std::vector<std::pair<const char*, Func>> test_functions;
         std::string_view str_table = get_string_table(handle);
@@ -728,7 +727,7 @@ int main(int argn, char** argv) {
     Main main;
     main_ptr = &main;
     if (!main.parse_arguments(argn, argv)) {
-        main.context.log_error("Failed parsing some arguments");
+        main.context.log_error("failed parsing some arguments");
         // TODO: show help.
         return 1;
     }
@@ -737,7 +736,7 @@ int main(int argn, char** argv) {
         main.add_source_directory("src");
         if (main.files.empty()) {
             // TODO: show help.
-            main.context.log_error("No input files");
+            main.context.log_info("no input files");
             return 2;
         }
     }

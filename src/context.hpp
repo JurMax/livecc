@@ -91,12 +91,12 @@ public:
         }
     }
 
+    // template<typename ...Args>
+    // inline void log_error(const Args&... args) {
+    //     log_info(args...);
+    // }
     template<typename ...Args>
     inline void log_error(const Args&... args) {
-        log_info(args...);
-    }
-    template<typename ...Args>
-    inline void log_error_title(const Args&... args) {
         log_info("\e[1;31mERROR:\e[0m \e[1m",  args..., "\e[0m");
     }
 

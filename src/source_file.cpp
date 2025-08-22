@@ -40,23 +40,25 @@ struct Parser {
     Return parse(const Context& context) {
         if (!f.is_open())
             return OPEN_FAILED;
-
+        enum { INCLUDE, IMPORT, MODULE } read_mode;
+        char end_quote;
+        bool got_space;
         c = read_char();
 
         empty_space: switch (c) { // anything after a newline.
+            case EOF: case '{': case '(': return OK;
             case '/': parse_comment();
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             case '#': goto include_i;
             case 'i': goto import_m;
             case 'm': goto module_o;
-            case EOF: case '{': case '(': return OK;
             default: c = read_char(); goto token;
         }
 
         token: switch (c) {  // Wait until we hit a newline or a ;
+            case EOF: case '{': case '(': return OK;
             case '/': parse_comment();
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
-            case EOF: case '{': case '(': return OK;
             default: c = read_char(); goto token;
         }
 
@@ -66,96 +68,60 @@ struct Parser {
         include_l: if ((c = read_char()) == 'l') goto include_u; else goto token;
         include_u: if ((c = read_char()) == 'u') goto include_d; else goto token;
         include_d: if ((c = read_char()) == 'd') goto include_e; else goto token;
-        include_e: if ((c = read_char()) == 'e') goto include_spaces; else goto token;
+        include_e: if ((c = read_char()) == 'e') { read_mode = INCLUDE; goto read_start; }  else goto token;
 
         import_m: if ((c = read_char()) == 'm') goto import_p; else goto token;
         import_p: if ((c = read_char()) == 'p') goto import_o; else goto token;
         import_o: if ((c = read_char()) == 'o') goto import_r; else goto token;
         import_r: if ((c = read_char()) == 'r') goto import_t; else goto token;
-        import_t: if ((c = read_char()) == 't') goto import_spaces; else goto token;
+        import_t: if ((c = read_char()) == 't') { read_mode = IMPORT; goto read_start; } else goto token;
 
         module_o: if ((c = read_char()) == 'o') goto module_d; else goto token;
         module_d: if ((c = read_char()) == 'd') goto module_u; else goto token;
         module_u: if ((c = read_char()) == 'u') goto module_l; else goto token;
         module_l: if ((c = read_char()) == 'l') goto module_e; else goto token;
-        module_e: if ((c = read_char()) == 'e') goto module_spaces; else goto token;
+        module_e: if ((c = read_char()) == 'e') { read_mode = MODULE; goto read_start; } else goto token;
 
-        include_spaces: switch (c = read_char()) {
+        read_start: got_space = false; goto read_spaces;
+        read_spaces: switch (c = read_char()) {
+            case EOF: return UNEXPECTED_END;
             case '/': parse_comment();
-            case ' ': case '\t': goto include_spaces;
-            case '<': buf_len = 0; goto include_read_bracket;
-            case '"': buf_len = 0; goto include_read_quote;
-            case EOF: return UNEXPECTED_END;
-            default: goto token;
-        }
-        include_read_bracket: switch (c = read_char()) {
-            case '>':
-                buffer[buf_len] = '\0';
-                file.include_dependencies.emplace(buffer, SourceFile::SYSTEM_HEADER);
-                goto token;
-            case EOF: return UNEXPECTED_END;
-            default:
-                if (!path_add_char(c))
-                    return PATH_TOO_LONG;
-                goto include_read_bracket;
-        }
-        include_read_quote: switch (c = read_char()) {
-            case '"':
-                buffer[buf_len] = '\0';
-                register_include(context);
-                goto token;
-            case EOF: return UNEXPECTED_END;
-            default:
-                if (!path_add_char(c))
-                    return PATH_TOO_LONG;
-                goto include_read_quote;
-        }
-
-        import_spaces: switch (c = read_char()) {
-            case '/': parse_comment();
-            case ' ': case '\t': case '\n': case '\r': goto import_spaces;
-            case EOF: return UNEXPECTED_END;
-            default:
+            case ' ': case '\t': case '\n': case '\r': got_space = true; goto read_spaces;
+            default: if (!got_space) goto token;
+            case '"': case '<':
                 buffer[0] = c;
                 buf_len = 1;
-                goto import_read;
+                switch (c) {
+                    case '<': end_quote = '>'; goto read_characters_quoted;
+                    case '"': end_quote = '"'; goto read_characters_quoted;
+                    default: goto read_characters;
+                }
         }
-        import_read: switch (c = read_char()) {
+        read_characters: switch (c = read_char()) {
+            case EOF: return UNEXPECTED_END;
             case '/': parse_comment();
-            case ';': case ' ': case '\t': case '\n': case '\r':
-                buffer[buf_len] = '\0';
-                file.module_dependencies.insert(buffer);
-                c = read_char();
-                goto empty_space;
+            case ';': case ' ': case '\t': case '\n': case '\r': goto write_characters;
+            default:
+                if (!path_add_char(c)) return PATH_TOO_LONG;
+                goto read_characters;
+        }
+        read_characters_quoted: switch (c = read_char()) {
             case EOF: return UNEXPECTED_END;
             default:
-                if (!path_add_char(c))
-                    return PATH_TOO_LONG;
-                goto import_read;
+                if (!path_add_char(c)) return PATH_TOO_LONG;
+                if (c == end_quote) goto write_characters;
+                goto read_characters_quoted;
         }
 
-        module_spaces: switch (c = read_char()) {
-            case '/': parse_comment();
-            case ' ': case '\t': case '\n': case '\r': goto module_spaces;
-            case EOF: return UNEXPECTED_END;
-            default:
-                buffer[0] = c;
-                buf_len = 1;
-                goto module_read;
-        }
-        module_read: switch (c = read_char()) {
-            case '/': parse_comment();
-            case ';': case ' ': case '\t': case '\n': case '\r':
-                buffer[buf_len] = '\0';
-                file.module_name = buffer;
-                c = read_char();
-                goto empty_space;
-            case EOF: return UNEXPECTED_END;
-            default:
-                if (!path_add_char(c))
-                    return PATH_TOO_LONG;
-                goto module_read;
-        }
+        write_characters:
+            switch (read_mode) {
+                case INCLUDE: register_include(context); break;
+                case IMPORT: file.module_dependencies.insert(std::string{buffer, buf_len}); break;
+                case MODULE: file.module_name = std::string{buffer, buf_len}; break;
+            }
+            c = read_char();
+            goto empty_space;
+
     }
 
     void parse_comment() {
@@ -191,7 +157,14 @@ struct Parser {
     }
 
     void register_include(const Context& context) {
-        fs::path path(buffer);
+        if (buf_len <= 2) return;
+        fs::path path(std::string_view(buffer + 1, buf_len - 2));
+
+        if (buffer[0] == '<') {
+            file.include_dependencies.emplace(path, SourceFile::SYSTEM_HEADER);
+            return;
+        }
+
         if (path.is_absolute()) {
             try_add_include(context, path);
             return;
@@ -209,7 +182,7 @@ struct Parser {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
             auto type = SourceFile::get_type(path.native());
-            if (!type || (*type != SourceFile::HEADER && *type != SourceFile::C_HEADER))
+            if (!type || (*type != SourceFile::HEADER))
                 type = SourceFile::BARE_INCLUDE;
             file.include_dependencies.emplace(normalise_path(context, path), *type);
             return true;
@@ -228,10 +201,9 @@ SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type
     if (i != std::string_view::npos) {
         std::string_view ext = path.substr(i + 1);
         if (ext == "c") return {C_UNIT};
-        if (ext == "h") return {HEADER};//{C_HEADER}; a lot of people use .h for C++ headers too.
         if (ext == "cppm") return {MODULE};
         constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
-        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H"};
+        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
         for (size_t i = 0; i < 8; ++i) {
             if (ext == unit_ext[i]) return {UNIT};
             if (ext == head_ext[i]) return {HEADER};
@@ -256,9 +228,7 @@ void SourceFile::set_compile_path(const Context& context) {
         case MODULE:
             compiled_path += ".o"; break;
         case HEADER:
-        case C_HEADER:
         case SYSTEM_HEADER:
-        case C_SYSTEM_HEADER:
             compiled_path += context.use_header_units ? ".pcm" : ".timestamp"; break;
         case PCH:
             compiled_path += ".gch"; break;
@@ -276,12 +246,12 @@ void SourceFile::read_dependencies(Context& context) {
 
     fs::file_time_type source_write_time;
     if (type == SYSTEM_HEADER) {
+        // Check the system header write time by going through all the options.
         for (const std::string_view& dir : context.build_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
                 goto found_file;
         }
-        // Check the system header write time by going through all the options.
         for (const fs::path& dir : context.system_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
@@ -297,13 +267,13 @@ void SourceFile::read_dependencies(Context& context) {
         switch (parser.parse(context)) {
             case Parser::OK: break;
             case Parser::OPEN_FAILED:
-                // context.log_error("Failed to open file ", source_path);
+                // context.log_error("failed to open file ", source_path);
                 break;
             case Parser::UNEXPECTED_END:
-                context.log_error("Parsing error in ", source_path);
+                context.log_error("parsing error in ", source_path);
                 break;
             case Parser::PATH_TOO_LONG:
-                context.log_error("A path or name in ", source_path, " is larger than 4096 characters");
+                context.log_error("a path or name in ", source_path, " is larger than 4096 characters");
                 break;
         }
     }
@@ -343,7 +313,7 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
 
     std::ostringstream command;
     command << context.build_command;
-    command << (is_c_file() ? context.c_version : context.cpp_version) << ' ';
+    command << (type == C_UNIT ? context.c_version : context.cpp_version) << ' ';
 
     if (context.include_source_parent_dir) {
         if (source_path.has_parent_path())
@@ -356,13 +326,9 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
     if (type == PCH)
         command << "-xc++-header -c ";
     else if (type == HEADER)
-        command << "-xc++-user-header --precompile ";
-    else if (type == C_HEADER)
-        command << "-xc-user-header --precompile ";
+        command << "-fmodule-header=user ";
     else if (type == SYSTEM_HEADER)
-        command << "-xc++-system-header --precompile ";
-    else if (type == C_SYSTEM_HEADER)
-        command << "-xc-system-header --precompile ";
+        command << "-fmodule-header=system -xc++-header ";
     else if (!live_compile) {
         if (type == MODULE) command << "--precompile ";
         else command << "-c ";
