@@ -8,7 +8,9 @@
 #include <string_view>
 #include <system_error>
 #include <format>
+#include <thread>
 
+#include "context.hpp"
 #include "plthook/plthook.h"
 
 // Make a path lexically normal, and possibly relative to the working directory
@@ -53,7 +55,7 @@ struct Parser {
 
         empty_space: switch (c) { // anything after a newline.
             case EOF: case '{': case '(': return OK;
-            case '/': parse_comment();
+            case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             case '#': goto include_i;
             case 'i': goto import_m;
@@ -63,7 +65,7 @@ struct Parser {
 
         token: switch (c) {  // Wait until we hit a newline or a ;
             case EOF: case '{': case '(': return OK;
-            case '/': parse_comment();
+            case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             default: c = read_char(); goto token;
         }
@@ -74,7 +76,7 @@ struct Parser {
         include_l: if ((c = read_char()) == 'l') goto include_u; else goto token;
         include_u: if ((c = read_char()) == 'u') goto include_d; else goto token;
         include_d: if ((c = read_char()) == 'd') goto include_e; else goto token;
-        include_e: if ((c = read_char()) == 'e') { read_mode = INCLUDE; goto read_start; }  else goto token;
+        include_e: if ((c = read_char()) == 'e') { read_mode = INCLUDE; goto read_start; } else goto token;
 
         import_m: if ((c = read_char()) == 'm') goto import_p; else goto token;
         import_p: if ((c = read_char()) == 'p') goto import_o; else goto token;
@@ -91,9 +93,9 @@ struct Parser {
         read_start: got_space = false; goto read_spaces;
         read_spaces: switch (c = read_char()) {
             case EOF: return UNEXPECTED_END;
-            case '/': parse_comment();
+            case '/': parse_comment(); [[fallthrough]];
             case ' ': case '\t': case '\n': case '\r': got_space = true; goto read_spaces;
-            default: if (!got_space) goto token;
+            default: if (!got_space) goto token; [[fallthrough]];
             case '"': case '<':
                 buffer[0] = c;
                 buf_len = 1;
@@ -105,7 +107,7 @@ struct Parser {
         }
         read_characters: switch (c = read_char()) {
             case EOF: return UNEXPECTED_END;
-            case '/': parse_comment();
+            case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\t': case '\n': case '\r': goto write_characters;
             default:
                 if (!path_add_char(c)) return PATH_TOO_LONG;
@@ -127,7 +129,6 @@ struct Parser {
             }
             c = read_char();
             goto empty_space;
-
     }
 
     void parse_comment() {
@@ -320,6 +321,9 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
     command << context.build_command;
     command << (type == C_UNIT ? context.c_version : context.cpp_version) << ' ';
 
+    if (type != PCH && context.compiler_type == Context::GCC)
+        command << "-fmodules ";
+
     if (context.include_source_parent_dir) {
         if (source_path.has_parent_path())
             command << "-I\"" << source_path.parent_path().native() << "\" ";
@@ -331,7 +335,7 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
     if (type == PCH)
         command << "-xc++-header -c ";
     else if (type == HEADER)
-        command << "-fmodule-header=user ";
+        command << "-fmodule-header=user -xc++-header "; // compile all headers as c++
     else if (type == SYSTEM_HEADER)
         command << "-fmodule-header=system -xc++-header ";
     else if (!live_compile) {
@@ -344,7 +348,13 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
             command << "-O0 ";
     }
 
-    command << "-o \"" << output_path.native() << "\" \"" << source_path.native() << '"';
+    command << '"' << source_path.native() << '"';
+
+    // Maybe use the gcm cache
+    if (!(context.use_header_units && context.compiler_type == Context::GCC && is_header()))
+        command << " -o \"" << output_path.native() << '"';
+    // else
+    //     command << " && touch \"" << output_path.native() << '"';
     return command.str();
 }
 
@@ -353,8 +363,52 @@ std::string_view SourceFile::pch_include() {
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
 }
 
+struct GCCModulePipe {
+    std::thread thread;
+    int input_pipe[2];
+    int output_pipe[2];
+
+    GCCModulePipe(Context& context) {
+        std::cout << "Create 0" << std::endl;
+        pipe(input_pipe);
+        pipe(output_pipe);
+        std::cout << "Create 1" << std::endl;
+        thread = std::thread(thread_func, &context, input_pipe[0], output_pipe[1]);
+        std::cout << "Create 2" << std::endl;
+    }
+
+    std::string mapper_arg() {
+        return std::format(" -fmodule-mapper=\"<{}>{}\"", output_pipe[0], input_pipe[1]);
+    }
+
+    ~GCCModulePipe() {
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        // Thread gets closed automatically.
+    }
+
+    static void thread_func(Context* context, int input_fd, int output_fd) {
+        char buffer[4096];
+        while (true) {
+            context->log_info(" WAITING FOR READ");
+            if (read(input_fd, buffer, sizeof(buffer)) <= 0)
+                return;
+            context->log_info("");
+            context->log_info("BUFF: ", buffer);
+            context->log_info(" WOWWW OKE");
+            context->log_info(" DOING WRITE");
+            if (write(output_fd, buffer, strlen(buffer)) == -1) // Just echo.
+                return;
+        }
+    }
+};
+
+
 // Returns true if an error occurred.
 bool SourceFile::compile(Context& context, bool live_compile) {
+    std::error_code ec;
 
     // Get the output path. This differs from compile_path if live compile is true.
     fs::path output_path;
@@ -366,10 +420,20 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     }
     else output_path = compiled_path;
 
-    if (type == SourceFile::PCH)
-        std::ofstream{fs::path{pch_include()}} << "#error PCH not included\n";
-
+    std::optional<GCCModulePipe> pipe;
     std::string build_command = get_build_command(context, output_path, do_live_compile);
+
+    // Create PCH file.
+    if (type == SourceFile::PCH) {
+        if (context.compiler_type == Context::GCC)
+            fs::copy_file(source_path, fs::path{pch_include()}, fs::copy_options::overwrite_existing, ec);
+        else
+            std::ofstream{fs::path{pch_include()}} << "#error PCH not included\n";
+    }
+    else if (context.compiler_type == Context::GCC) {
+        // pipe.emplace(context); // TODO TODO
+        // build_command += pipe->mapper_arg();
+    }
 
     if (context.verbose)
         context.log_info("Compiling ", source_path, " to ", output_path, " using: ", build_command);
@@ -384,12 +448,13 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
         exit(1); // TODO: this is ugly, we have to shut down gracefully.
 
-    if (compilation_failed)
+    if (compilation_failed) {
+        fs::remove(compiled_path, ec);
         return false;
+    }
 
     latest_obj = output_path;
-    std::error_code err_code;
-    compiled_time = fs::last_write_time(compiled_path, err_code);
+    compiled_time = fs::last_write_time(compiled_path, ec);
     return true;
 }
 

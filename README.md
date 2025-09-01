@@ -4,7 +4,9 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 ## TODO
 
-- Don't/fix system header modules compile warnings.
+- Don't display/fix system header modules compile warnings.
+- Imported headers should become header units automatically (maybe add two versions?)
+    - we can see if they're header unist based on "" / <>
 - Check if clang or livecc changed and recompile if so.
 - Fix module support: actually build the two thingies.
 - During live reload: build the normal object file on an extra thread, to allow quicker restart.
@@ -15,5 +17,6 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Multiple PCH? --pch then applies to all files defined after it, or everything if only one is defined at all.
 - Support C style pch
 - Allow changing the compiler from clang to other things like gcc.
+- GCC support by adding an support for -fmodule-mapper: https://gcc.gnu.org/wiki/cxx-modules#CMI_Location.
 
 - More sensible default warning maybe?

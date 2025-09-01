@@ -128,9 +128,11 @@ private:
                 }
                 else if (context.use_header_units
                     && (actual_type == SourceFile::HEADER || actual_type == SourceFile::SYSTEM_HEADER)) {
-                    file.build_includes.append_range(std::string_view{"-fmodule-file=\""});
-                    file.build_includes.append_range(it->second->compiled_path.native());
-                    file.build_includes.append_range(std::string_view{"\" "});
+                    if (context.compiler_type == Context::CLANG) {
+                        file.build_includes.append_range(std::string_view{"-fmodule-file=\""});
+                        file.build_includes.append_range(it->second->compiled_path.native());
+                        file.build_includes.append_range(std::string_view{"\" "});
+                    }
                 }
 
                 it->second->dependent_files.push_back(&file);
@@ -227,7 +229,7 @@ struct Compiler {
         for (auto it = files.begin(), end = files.end(); it != end; ++it) {
             if (it->compilation_failed)
                 compilations_failed++;
-            else if (it->compiled_dependencies != it->dependencies_count)
+            else if (it->compiled_dependencies < it->dependencies_count)
                 dependencies_missing++;
         }
 
@@ -243,12 +245,12 @@ struct Compiler {
             context.log_info();
             context.log_error("files are missing one or more dependencies:");
             for (SourceFile& file : files)
-                if (file.compiled_dependencies != file.dependencies_count)
+                if (file.compiled_dependencies < file.dependencies_count)
                     std::cout << "        " << file.source_path << std::endl;
 
             bool circular_dependencies = false;
             for (SourceFile& file : files) {
-                if (file.compiled_dependencies != file.dependencies_count) {
+                if (file.compiled_dependencies < file.dependencies_count) {
                     if (depends_on(file, file)) {
                         if (!circular_dependencies) {
                             circular_dependencies = true;
@@ -327,10 +329,18 @@ struct Main {
         context.output_file = "build/a.out";
         std::ostringstream build_command;
         std::ostringstream link_arguments;
-        build_command << "clang ";
+
+        if (const char* env_compiler = std::getenv("CXX"))
+            context.compiler = env_compiler;
+        else if (const char* env_compiler = std::getenv("CC"))
+            context.compiler = env_compiler;
+        if (context.compiler.contains("gcc") || context.compiler.contains("g++"))
+            context.compiler_type = Context::GCC;
+
+
+        build_command << context.compiler << ' ';
 
         enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
-
         for (int i = 1; i < argn; ++i) {
             std::string_view arg(argv[i]);
 
@@ -457,11 +467,11 @@ struct Main {
     }
 
     /**
-     * Invoke clang and read the previous configuration.
+     * Invoke the compiler and read the previous configuration.
      */
     bool initialise() {
         if (!get_system_include_dirs()) {
-            context.log_error("couldn't find clang, is it in the path?");
+            context.log_error("couldn't find ", context.compiler, ". is it in the path?");
             return false;
         }
         context.build_command_changed = have_build_args_changed();
@@ -471,9 +481,10 @@ struct Main {
 
 
     bool get_system_include_dirs() {
-        // TODO: maybe cache this, only check if clang file write time changes on startup.
+        // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
         char buf[4096];
-        FILE* pipe = popen("echo | clang -xc++ -E -v - 2>&1 >/dev/null", "r");
+        std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.compiler);
+        FILE* pipe = popen(command.c_str(), "r");
         FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
         if (pipe == nullptr)
             return false;
@@ -493,7 +504,7 @@ struct Main {
     }
 
     bool have_build_args_changed() {
-        // TODO: check if clang or livecc version updated by checking
+        // TODO: check if the compiler or livecc version updated by checking
         // if their file changes is higher than command.txt
 
         std::vector<char> build_command;

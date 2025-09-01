@@ -33,6 +33,9 @@ struct Context {
     fs::path output_file;
     fs::path output_directory;
 
+    std::string_view compiler = "clang";
+    enum { CLANG, GCC } compiler_type = CLANG;
+
     // Command line arguments.
     build_type_t build_type = LIVE;
     bool include_source_parent_dir = true;
@@ -74,6 +77,7 @@ public:
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
         term_width = w.ws_col;
     }
+    Context(const Context&) = delete;
 
     template<typename ...Args>
     void log_info(const Args&... args) {
