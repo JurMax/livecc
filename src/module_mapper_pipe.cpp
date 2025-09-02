@@ -39,7 +39,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
             auto range = line | std::views::split(' ') | as_string;
             auto it = range.begin(), end = range.end();
             if (context->verbose)
-                context->log_info("GOT INPUT: ", line);
+                context->log.info("GOT INPUT: ", line);
             switch (hash(*it++)) {
                 case hash("HELLO"sv):
                     if (!write("HELLO 1 LIVECC"sv))
@@ -52,7 +52,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
                 case hash("MODULE-EXPORT"sv):
                     if (it == end) goto err;
                     if (*it != file->module_name)
-                        context->log_error("module names dont match: got ", *it, " but expected ", file->module_name);
+                        context->log.error("module names dont match: got ", *it, " but expected ", file->module_name);
                     if (!write("PATHNAME \""sv, file->compiled_path.native(), "\""sv))
                         return;
                     break;
@@ -65,7 +65,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
                 case hash("MODULE-IMPORT"sv):
                     if (it == end) goto err;
                     // TODO
-                    context->log_error("not implemented: ", line);
+                    context->log.error("not implemented: ", line);
                     if (!write("ERROR NOT_IMPLEMENTED"sv))
                         return;
                     break;
@@ -76,12 +76,12 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
                         return;
                     break;
                 case hash("INVOKE"sv):
-                    context->log_error("request not supported: ", line);
+                    context->log.error("request not supported: ", line);
                     if (!write("ERROR NOT_SUPPORTED"sv))
                         return;
                     break;
                 default: err:
-                    context->log_error("invalid request: ", line);
+                    context->log.error("invalid request: ", line);
                     if (!write("ERROR INVALID_REQUEST"sv))
                         return;
                     break;

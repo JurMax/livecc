@@ -9,7 +9,6 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
     - If --use-header-units is not used, the same file needs to be able to be used as an header if included and as a module if explicitly imported. (prob just treat it as a module header file, doesnt matter if some files have to wait a bit longer before its ready)
 
 
-- Don't display/fix system header modules compile warnings.
 - Imported headers should become header units automatically (maybe add two versions?)
     - we can see if they're header unist based on "" / <>
 - Check if clang or livecc changed and recompile if so.

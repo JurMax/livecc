@@ -3,7 +3,7 @@
 #include <thread>
 #include <string>
 
-class Context;
+struct Context;
 class SourceFile;
 
 class ModuleMapperPipe {

@@ -3,6 +3,7 @@
 #include "thread_pool.hpp"
 
 #include <algorithm>
+#include <csignal>
 #include <fstream>
 
 
@@ -19,7 +20,7 @@ struct Compiler {
                 bool success = compile_file(context, file);
                 if (success)
                     mark_compiled(file);
-                context.log_step_task();
+                context.log.step_task();
                 return !success;
             });
         }
@@ -60,10 +61,8 @@ static bool depends_on_print(SourceFile& file, SourceFile& dependency) {
 
 // Returns true if an error occurred. // TODO: move to compiler.cpp
 bool compile_file(const Context& context, SourceFile& file, const std::filesystem::path& output_path, bool live_compile) {
-
-    // Get the output path. This differs from compile_path if live compile is true.
     std::string build_command = file.get_build_command(context, output_path, live_compile);
-    std::optional<ModuleMapperPipe> pipe;
+    std::optional<ModuleMapperPipe> module_pipe;
     std::error_code ec;
 
     // Create PCH file.
@@ -74,17 +73,33 @@ bool compile_file(const Context& context, SourceFile& file, const std::filesyste
             std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
     }
     else if (context.compiler_type == Context::GCC && !file.uses_timestamp(context)) {
-        pipe.emplace(context, file);
-        build_command += pipe->mapper_arg();
+        module_pipe.emplace(context, file);
+        build_command += module_pipe->mapper_arg();
     }
 
     if (context.verbose)
-        context.log_info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
+        context.log.info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
     else
-        context.log_info("Compiling ", file.source_path, " to ", output_path);
+        context.log.info("Compiling ", file.source_path, " to ", output_path);
 
-    // Run the command, and exit when interrupted.
-    int err = system(build_command.c_str());
+    build_command += " 2>&1";
+
+    // Run the command and capture its output.
+    FILE* process = popen(build_command.c_str(), "r");
+    std::vector<char> output;
+    {
+        char buff[256];
+        size_t chars_read;
+        do  {
+            chars_read = fread(buff, 1, sizeof(buff), process);
+            output.append_range(std::string_view{buff, chars_read});
+        } while (chars_read == sizeof(buff));
+    }
+
+    // Check if the process was successful.
+    int err = pclose(process);
+    if (!output.empty() && (file.type != SourceFile::SYSTEM_HEADER || err != 0)) // Don't output system header warnings.
+        context.log.info(std::string_view{output});
     if (err != 0)
         file.compilation_failed = true;
 
@@ -96,7 +111,6 @@ bool compile_file(const Context& context, SourceFile& file, const std::filesyste
         return false;
     }
 
-    file.latest_obj = output_path;
     file.compiled_time = fs::last_write_time(output_path, ec);
     return true;
 }
@@ -108,7 +122,7 @@ bool compile_file(const Context& context, SourceFile& file) {
 
 bool compile_all(const Context& context, std::deque<SourceFile>& files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) { return f.need_compile; });
-    context.log_set_task("COMPILING", compile_count);
+    context.log.set_task("COMPILING", compile_count);
     Compiler compiler{context, context.job_count};
 
     // Add all files that have no dependencies to the compile queue.
@@ -118,8 +132,9 @@ bool compile_all(const Context& context, std::deque<SourceFile>& files) {
             compiler.add_to_compile_queue(file);
 
     compiler.pool.join();
-    context.log_clear_task();
+    context.log.clear_task();
 
+    // Check for errors.
     int dependencies_missing = 0;
     int compilations_failed = 0;
     for (auto it = files.begin(), end = files.end(); it != end; ++it) {
@@ -129,17 +144,18 @@ bool compile_all(const Context& context, std::deque<SourceFile>& files) {
             dependencies_missing++;
     }
 
+    // Output errors.
     if (compilations_failed) {
-        context.log_info();
-        context.log_error("compilation failed for:");
+        context.log.info();
+        context.log.error("compilation failed for:");
         for (SourceFile& file : files)
             if (file.compilation_failed)
                 std::cout << "        " << file.source_path << std::endl;
         return false;
     }
     else if (dependencies_missing) {
-        context.log_info();
-        context.log_error("files are missing one or more dependencies:");
+        context.log.info();
+        context.log.error("files are missing one or more dependencies:");
         for (SourceFile& file : files)
             if (file.compiled_dependencies < file.dependencies_count)
                 std::cout << "        " << file.source_path << std::endl;
@@ -150,8 +166,8 @@ bool compile_all(const Context& context, std::deque<SourceFile>& files) {
                 if (depends_on(file, file)) {
                     if (!circular_dependencies) {
                         circular_dependencies = true;
-                        context.log_info();
-                        context.log_error("circular dependencies found:");
+                        context.log.info();
+                        context.log.error("circular dependencies found:");
                     }
                     std::cout << "        ";
                     depends_on_print(file, file);

@@ -53,9 +53,6 @@ public:
     std::atomic<int> compiled_dependencies; // When this is equal to dependencies_count, we can compile.
     int dependencies_count = 0;
 
-    // RUNTIME.
-    fs::path latest_obj;
-
 public:
     SourceFile(const Context& context, const fs::path& path, type_t type);
 
@@ -63,7 +60,7 @@ public:
 
     inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER; }
     inline bool is_include() const { return is_header() || type == PCH || type == BARE_INCLUDE; }
-    bool uses_timestamp( const Context& context );
+    bool uses_timestamp( const Context& context ) const;
 
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(const Context& context);

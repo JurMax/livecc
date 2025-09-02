@@ -1,21 +1,11 @@
 #pragma once
 
-#include <vector>
 #include <filesystem>
-#include <mutex>
 #include <iostream>
-#include <string>
+#include <mutex>
 #include <string_view>
+#include <string>
 #include <vector>
-#include <format>
-#include <cstring>
-#include <csignal>
-
-#include <dlfcn.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <dlfcn.h>
 
 namespace fs = std::filesystem;
 
@@ -28,8 +18,7 @@ enum build_type_t {
     STANDALONE,   // Build as a standalone executable.
 };
 
-class Context {
-public:
+struct Context {
     fs::path working_directory;
     fs::path output_file;
     fs::path output_directory;
@@ -59,75 +48,37 @@ public:
     // The amount of files to compile in parallel.
     int job_count = 0;
 
-    // Runtime.
-    link_map* handle;
-    plthook_t* plthook;
-    std::vector<void*> loaded_handles;
-    std::vector<fs::path> temporary_files;
+    mutable struct Logging {
+        Logging();
 
-public:
-    mutable std::string task_name;
-    mutable std::mutex print_mutex;
-    mutable int bar_task_current;
-    mutable int bar_task_total;
-    int term_width;
-
-public:
-    inline Context() {
-        struct winsize w;
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-        term_width = w.ws_col;
-    }
-    Context(const Context&) = delete;
-
-    template<typename ...Args>
-    void log_info(const Args&... args) const {
-        std::unique_lock<std::mutex> lock(print_mutex);
-        std::ostringstream ss;
-        ((ss << args), ...);
-        std::string to_print = ss.str();
-        std::cout << to_print;
-        for (int i = to_print.size() + 1; i < term_width; ++i)
-            std::cout << ' ';
-        std::cout << std::endl;
-
-        if (!task_name.empty()) {
+        inline void info(const auto&... args) {
+            std::unique_lock<std::mutex> lock(mutex);
+            clear_term();
+            (std::cout << ... << args) << '\n';
             print_bar();
         }
-    }
 
-    // template<typename ...Args>
-    // inline void log_error(const Args&... args) {
-    //     log_info(args...);
-    // }
-    template<typename ...Args>
-    inline void log_error(const Args&... args) const {
-        log_info("\e[1;31mERROR:\e[0m \e[1m",  args..., "\e[0m");
-    }
+        inline void error(const auto&... args) {
+            std::unique_lock<std::mutex> lock(mutex);
+            clear_term();
+            std::cerr << "\e[1;31mERROR:\e[0m \e[1m";
+            (std::cerr << ... << args) << "\e[0m\n";
+            print_bar();
+        }
 
-    inline void log_set_task(const std::string_view& task, int task_total) const {
-        task_name = task;
-        bar_task_total = task_total;
-        bar_task_current = 0;
-    }
-    inline void log_clear_task() const {
-        task_name.clear();
-    }
-    inline void log_step_task() const {
-        std::unique_lock<std::mutex> lock(print_mutex);
-        ++bar_task_current;
-        print_bar();
-    }
-private:
-    inline void print_bar() const {
-        std::cout << task_name << " [";
-        int length = term_width - task_name.length() - 2 - 7;
-        int progress = bar_task_current * length / bar_task_total;
-        int i = 0;
-        for (; i < progress; ++i) std::cout << '=';
-        if (i < length) std::cout << '>';
-        for (++i; i < length; ++i) std::cout << ' ';
-        std::cout << std::format("] {:>3}%\r", bar_task_current * 100 / bar_task_total);
-        std::cout.flush();
-    }
+        void set_task(const std::string_view& task, int task_total);
+        void increase_task_total(int amount = 1);
+        void clear_task();
+        void step_task();
+
+    private:
+        void clear_term() const;
+        void print_bar() const;
+
+        std::mutex mutex;
+        std::string task_name;
+        int bar_task_current;
+        int bar_task_total;
+        int term_width;
+    } log;
 };

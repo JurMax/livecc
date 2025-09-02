@@ -23,7 +23,7 @@ struct DependencyTreeBuilder {
                     SourceFile& header = files.emplace_back(context, header_path, type);
                     header.set_compile_path(context);
                     it = tree.header_map.emplace(header_path, &header).first;
-                    context.bar_task_total++;
+                    context.log.increase_task_total();
                     pool.enqueue([&] -> bool {
                         return map_file_dependencies(header);
                     });
@@ -59,7 +59,7 @@ struct DependencyTreeBuilder {
                     file.dependencies_count++;
                 }
                 else {
-                    context.log_error("module [", module, "] imported in ", file.source_path, " does not exist");
+                    context.log.error("module [", module, "] imported in ", file.source_path, " does not exist");
                 }
             }
         }
@@ -68,7 +68,7 @@ struct DependencyTreeBuilder {
         if (file.type == SourceFile::PCH)
             file.dependencies_count = 0;
 
-        context.log_step_task();
+        context.log.step_task();
         return false;
     }
 };
@@ -77,7 +77,7 @@ struct DependencyTreeBuilder {
 bool DependencyTree::build(const Context& context, std::deque<SourceFile>& files) {
     DependencyTreeBuilder builder{context, files, *this, context.job_count};
 
-    context.log_set_task("LOADING DEPENDENCIES", files.size());
+    context.log.set_task("LOADING DEPENDENCIES", files.size());
 
     // Initialise the maps.
     for (SourceFile& f : files) {
@@ -86,7 +86,7 @@ bool DependencyTree::build(const Context& context, std::deque<SourceFile>& files
             if (it == module_map.end())
                 module_map.emplace(f.module_name, &f);
             else {
-                context.log_error("there are multiple implementations for module ", f.module_name,
+                context.log.error("there are multiple implementations for module ", f.module_name,
                     "(in ", it->second->source_path, " and ", f.source_path, ")");
                 return false;
             }
@@ -108,7 +108,7 @@ bool DependencyTree::build(const Context& context, std::deque<SourceFile>& files
             return builder.map_file_dependencies(file);
         });
     builder.pool.join();
-    context.log_clear_task();
+    context.log.clear_task();
     return true;
 }
 

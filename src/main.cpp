@@ -16,6 +16,7 @@
 #include "thread_pool.hpp"
 
 #include <charconv>
+#include <cstring>
 #include <elf.h>
 #include <filesystem>
 #include <link.h>
@@ -97,7 +98,7 @@ struct Main {
                     std::string_view value = arg.length() == 2 ? argv[++i] : arg.substr(2);
                     if (std::from_chars(value.begin(), value.end(), job_count).ec == std::errc{})
                         context.job_count = job_count;
-                    else context.log_error("invalid job count value: ", value);
+                    else context.log.error("invalid job count value: ", value);
                 }
                 else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=")) {
                     link_arguments << arg << ' ';
@@ -141,7 +142,7 @@ struct Main {
                     if (auto type = SourceFile::get_type(arg))
                         files.emplace_back(context, arg, *type);
                     else if (!add_source_directory(arg))
-                        context.log_error("unknown input supplied: ", arg);
+                        context.log.error("unknown input supplied: ", arg);
                 }
                 else if (next_arg_type == PCH)
                     files.emplace_back(context, arg, SourceFile::PCH);
@@ -179,11 +180,11 @@ struct Main {
         // if (context.build_type == LIVE)
             // build_command << "-fno-inline ";// -fno-ipa-sra";
         // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-        build_command << "-Winvalid-pch ";
+        build_command << "-fdiagnostics-color=always -Winvalid-pch ";
 
         if (context.test) {
             if (context.build_type == STANDALONE)
-                context.log_error("tests can't be run in standalone mode!");
+                context.log.error("tests can't be run in standalone mode!");
             else
                 build_command << "-DLCC_TEST ";
         }
@@ -210,7 +211,7 @@ struct Main {
      */
     bool initialise() {
         if (!get_system_include_dirs()) {
-            context.log_error("couldn't find ", context.compiler, ". is it in the path?");
+            context.log.error("couldn't find ", context.compiler, ". is it in the path?");
             return false;
         }
         context.build_command_changed = have_build_args_changed();
@@ -347,66 +348,74 @@ struct Main {
                     link_command << ' ' << file.compiled_path;
             link_command << '\0';
 
-            context.log_info("Linking sources together...");
+            context.log.info("Linking sources together...");
             // std::cout << link_command.str() << std::endl;
 
             if (context.verbose)
-                context.log_info(link_command.view());
+                context.log.info(link_command.view());
 
             if (int err = system(link_command.view().data())) {
-                context.log_error("error linking to ", context.output_file, ": ", err);
+                context.log.error("error linking to ", context.output_file, ": ", err);
                 return false;
             }
         }
 
-        context.log_info("");
+        context.log.info("");
         return true;
     }
 
 public:
+    struct Runtime {
+        link_map* handle;
+        plthook_t* plthook;
+        std::vector<void*> loaded_handles;
+        std::vector<fs::path> temporary_files;
+    } runtime;
+
+
     void start(dll_callback_func_t* callback_func) {
         // Open the created shared library.
-        context.handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-        if (context.handle == nullptr)
-            context.log_error("loading application failed:", dlerror());
+        runtime.handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+        if (runtime.handle == nullptr)
+            context.log.error("loading application failed:", dlerror());
 
-        if (plthook_open_by_handle(&context.plthook, context.handle) != 0) {
-            context.log_error("plthook error: ", plthook_error());
+        if (plthook_open_by_handle(&runtime.plthook, runtime.handle) != 0) {
+            context.log.error("plthook error: ", plthook_error());
             return;
         }
 
-        set_callback_func_t* set_callback = (set_callback_func_t*)dlsym(context.handle, "setDLLCallback");
+        set_callback_func_t* set_callback = (set_callback_func_t*)dlsym(runtime.handle, "setDLLCallback");
         if (set_callback == nullptr)
-            context.log_info("no setDLLCallback() found, so we can't check for file changes!");
+            context.log.info("no setDLLCallback() found, so we can't check for file changes!");
         else
             (*set_callback)(callback_func);
 
         // Run the main function till we're done.
         typedef int mainFunc(int, char**);
-        mainFunc* main_func = (mainFunc*)dlsym(context.handle, "main");
+        mainFunc* main_func = (mainFunc*)dlsym(runtime.handle, "main");
         if (main_func == nullptr)
-            context.log_info("no main function found, so we can't start the application!");
+            context.log.info("no main function found, so we can't start the application!");
         else
             (*main_func)(0, nullptr);
 
-        context.log_info("ending live reload session");
+        context.log.info("ending live reload session");
         close();
 
-        plthook_close(context.plthook);
-        dlclose(context.handle);
+        plthook_close(runtime.plthook);
+        dlclose(runtime.handle);
     }
 
     void close() {
         // Close all the dlls.
-        while (!context.loaded_handles.empty()) {
-            dlclose(context.loaded_handles.back());
-            context.loaded_handles.pop_back();
+        while (!runtime.loaded_handles.empty()) {
+            dlclose(runtime.loaded_handles.back());
+            runtime.loaded_handles.pop_back();
         }
 
         // Delete the temporary files.
-        while (!context.temporary_files.empty()) {
-            fs::remove(context.temporary_files.back());
-            context.temporary_files.pop_back();
+        while (!runtime.temporary_files.empty()) {
+            fs::remove(runtime.temporary_files.back());
+            runtime.temporary_files.pop_back();
         }
 
         files.clear();
@@ -415,11 +424,11 @@ public:
     void load_and_replace_functions(const fs::path& obj_path) {
         link_map* handle = (link_map*)dlopen(obj_path.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
         if (handle == nullptr) {
-            context.log_info("Error loading ", obj_path);
+            context.log.info("Error loading ", obj_path);
             return;
         }
 
-        context.loaded_handles.push_back(handle);
+        runtime.loaded_handles.push_back(handle);
         std::string_view str_table = get_string_table(handle);
 
         for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
@@ -431,7 +440,7 @@ public:
                 if (func != nullptr && strlen(name) > 3) {
                     bool is_cpp = name[0] == '_' && name[1] == 'Z';
                     if (is_cpp) {
-                        int error = plthook_replace(context.plthook, name, func, NULL);
+                        int error = plthook_replace(runtime.plthook, name, func, NULL);
                         (void)error;
 
                     // if (error == 0)
@@ -447,15 +456,17 @@ public:
 
         SourceFile& file = files[path_index];
         if (file.has_source_changed()) {
-            context.log_info(file.source_path, " changed!");
+            context.log.info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
 
             fs::path output_path = context.output_directory / "tmp"
-                    / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
-            context.temporary_files.push_back(output_path);
+                    / ("tmp" + (std::to_string(runtime.temporary_files.size()) + ".so"));
+            std::error_code ec;
+            fs::create_directories(context.output_directory / "tmp", ec);
+            runtime.temporary_files.push_back(output_path);
             if (compile_file(context, file, output_path, true)) {
                 load_and_replace_functions(output_path);
-                context.log_info("Done!");
+                context.log.info("Done!");
             }
         }
     }
@@ -464,7 +475,7 @@ public:
         // Open the created shared library.
         link_map* handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (handle == nullptr)
-            context.log_error("error loading test application: ", dlerror());
+            context.log.error("error loading test application: ", dlerror());
         typedef void (*Func)(void);
         std::vector<std::pair<const char*, Func>> test_functions;
         std::string_view str_table = get_string_table(handle);
@@ -485,18 +496,18 @@ public:
                     }
                 }
 
-        context.log_info("Running ", test_functions.size(), " tests");
-        context.log_set_task("TESTING", test_functions.size());
+        context.log.info("Running ", test_functions.size(), " tests");
+        context.log.set_task("TESTING", test_functions.size());
         ThreadPool pool(context.job_count);
         for (auto [name, func]: test_functions)
             pool.enqueue([this, func] {
                 func();
-                context.log_step_task();
+                context.log.step_task();
                 return false; // TODO: check for errors.
             });
         pool.join();
-        context.log_clear_task();
-        context.log_info("\n");
+        context.log.clear_task();
+        context.log.info("\n");
         dlclose(handle);
     }
 };
@@ -507,7 +518,7 @@ int main(int argn, char** argv) {
     Main main;
     main_ptr = &main;
     if (!main.parse_arguments(argn, argv)) {
-        main.context.log_error("failed parsing some arguments");
+        main.context.log.error("failed parsing some arguments");
         // TODO: show help.
         return 1;
     }
@@ -516,7 +527,7 @@ int main(int argn, char** argv) {
         main.add_source_directory("src");
         if (main.files.empty()) {
             // TODO: show help.
-            main.context.log_info("no input files");
+            main.context.log.info("no input files");
             return 2;
         }
     }

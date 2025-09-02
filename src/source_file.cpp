@@ -271,13 +271,13 @@ void SourceFile::read_dependencies(const Context& context) {
         switch (parser.parse(context)) {
             case Parser::OK: break;
             case Parser::OPEN_FAILED:
-                // context.log_error("failed to open file ", source_path);
+                // context.log.error("failed to open file ", source_path);
                 break;
             case Parser::UNEXPECTED_END:
-                context.log_error("parsing error in ", source_path);
+                context.log.error("parsing error in ", source_path);
                 break;
             case Parser::PATH_TOO_LONG:
-                context.log_error("a path or name in ", source_path, " is larger than 4096 characters");
+                context.log.error("a path or name in ", source_path, " is larger than 4096 characters");
                 break;
         }
     }
@@ -311,7 +311,7 @@ bool SourceFile::has_source_changed() {
     return false;
 }
 
-bool SourceFile::uses_timestamp(const Context& context) {
+bool SourceFile::uses_timestamp(const Context& context) const {
     return type == SourceFile::BARE_INCLUDE || (!context.use_header_units && is_header());
 };
 
