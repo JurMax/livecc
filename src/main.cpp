@@ -11,14 +11,14 @@
 
 #include "plthook/plthook.h"
 
+#include "dependency_tree.hpp"
+#include "compiler.hpp"
 #include "thread_pool.hpp"
-#include "context.hpp"
-#include "source_file.hpp"
+
 #include <charconv>
 #include <filesystem>
 #include <string>
 #include <system_error>
-#include <unordered_map>
 #include <stdio.h>
 #include <fstream>
 
@@ -35,7 +35,7 @@
 // TODO: use inotify.
 
 namespace fs = std::filesystem;
-
+using namespace std::literals;
 
 #define CHK_PH(func) do { \
     if (func != 0) { \
@@ -49,276 +49,12 @@ typedef void dll_callback_func_t(void);
 typedef int set_callback_func_t(dll_callback_func_t*);
 
 
-/**
- * Build the dependency tree
- */
-struct DependencyTreeBuilder {
-    Context& context;
-    std::deque<SourceFile>& files;
-
-    ThreadPool pool;
-    std::unordered_map<fs::path, SourceFile*> header_map;
-    std::unordered_map<std::string, SourceFile*> module_map;
-
-    std::mutex header_mutex;
-    std::mutex module_mutex;
-
-    // Returns true on success.
-    bool build() {
-        context.log_set_task("LOADING DEPENDENCIES", files.size());
-
-        // Initialise the maps.
-        for (SourceFile& f : files) {
-            if (f.type == SourceFile::MODULE) {
-                auto it = module_map.find(f.module_name);
-                if (it == module_map.end())
-                    module_map.emplace(f.module_name, &f);
-                else {
-                    context.log_error("there are multiple implementations for module ", f.module_name,
-                        "(in ", it->second->source_path, " and ", f.source_path, ")");
-                    return false;
-                }
-            }
-            else if (f.is_include())
-                header_map.emplace(f.source_path, &f);
-
-            // Make all files depend on the PCH
-            if (f.type == SourceFile::PCH)
-                for (SourceFile& i : files)
-                    if (i.type == SourceFile::UNIT || i.type == SourceFile::MODULE || i.type == SourceFile::HEADER)
-                        i.include_dependencies.insert_or_assign(f.source_path, SourceFile::PCH);
-        }
-
-        // Read all the files. Store the size to avoid mapping a
-        // header that was added later twice.
-        for (size_t i = 0, l = files.size(); i != l; ++i)
-            pool.enqueue([&, &file = files[i]] {
-                return map_file_dependencies(file);
-            });
-        pool.join();
-        context.log_clear_task();
-        return true;
-    }
-
-private:
-    bool map_file_dependencies(SourceFile& file) {
-        file.read_dependencies(context);
-
-        if (!file.include_dependencies.empty()) {
-            std::lock_guard<std::mutex> lock(header_mutex);
-            for (const auto& [header_path, type] : file.include_dependencies) {
-                auto it = header_map.find(header_path);
-                if (it == header_map.end()) {
-                    // Insert the header as a new source file.
-                    SourceFile& header = files.emplace_back(context, header_path, type);
-                    header.set_compile_path(context);
-                    it = header_map.emplace(header_path, &header).first;
-                    context.bar_task_total++;
-                    pool.enqueue([&] -> bool {
-                        return map_file_dependencies(header);
-                    });
-                }
-
-                SourceFile::type_t actual_type = it->second->type;
-
-                if (actual_type == SourceFile::PCH && actual_type != SourceFile::SYSTEM_HEADER) {
-                    file.build_includes.append_range(std::string_view{"-include \""});
-                    file.build_includes.append_range(it->second->pch_include());
-                    file.build_includes.append_range(std::string_view{"\" "});
-                }
-                else if (context.use_header_units
-                    && (actual_type == SourceFile::HEADER || actual_type == SourceFile::SYSTEM_HEADER)) {
-                    if (context.compiler_type == Context::CLANG) {
-                        file.build_includes.append_range(std::string_view{"-fmodule-file=\""});
-                        file.build_includes.append_range(it->second->compiled_path.native());
-                        file.build_includes.append_range(std::string_view{"\" "});
-                    }
-                }
-
-                it->second->dependent_files.push_back(&file);
-                file.dependencies_count++;
-            }
-        }
-
-        if (!file.module_dependencies.empty()) {
-            std::lock_guard<std::mutex> lock(module_mutex);
-            for (const std::string& module : file.module_dependencies) {
-                auto it = module_map.find(module);
-                if (it != module_map.end()) {
-                    it->second->dependent_files.push_back(&file);
-                    file.dependencies_count++;
-                }
-                else {
-                    context.log_error("module [", module, "] imported in ", file.source_path, " does not exist");
-                }
-            }
-        }
-
-        // Mark the PCH as having zero dependencies, as it needs to be compiled first.
-        if (file.type == SourceFile::PCH)
-            file.dependencies_count = 0;
-
-        context.log_step_task();
-        return false;
-    }
-
-public:
-    // Returns true if at least 1 file should be compiled.
-    uint mark_for_compilation() {
-        uint compile_count = 0;
-        if (context.build_command_changed) {
-            for (SourceFile& file : files)
-                file.need_compile = true;
-            compile_count += files.size();
-        }
-        else {
-            for (SourceFile& file : files)
-                if (file.dependencies_count == 0)
-                    compile_count += check_file_for_compilation(file);
-        }
-        return compile_count;
-    }
-
-private:
-    uint check_file_for_compilation(SourceFile& file) {
-        if (file.has_changed)
-            return mark_file_for_compilation(file);
-        else {
-            file.visited = true;
-            uint compile_count = 0;
-            for (SourceFile* child : file.dependent_files)
-                if (!child->visited)
-                    compile_count += check_file_for_compilation(*child);
-            return compile_count;
-        }
-    }
-
-    uint mark_file_for_compilation(SourceFile& file) {
-        uint compile_count = 1;
-        file.need_compile = true;
-        file.visited = true;
-        for (SourceFile* child : file.dependent_files)
-            if (!child->need_compile)
-                compile_count += mark_file_for_compilation(*child);
-        return compile_count;
-    }
-};
-
-/**
- * Compile te files that need to be compiled.
- */
-struct Compiler {
-    Context& context;
-    std::deque<SourceFile>& files;
-    ThreadPool pool;
-
-    bool compile_files(size_t compile_count) {
-        context.log_set_task("COMPILING", compile_count);
-
-        // Add all files that have no dependencies to the compile queue.
-        // As these compile they will add all the other files too.
-        for (SourceFile& file : files)
-            if (file.dependencies_count == 0)
-                add_to_compile_queue(file);
-
-        pool.join();
-        context.log_clear_task();
-
-        int dependencies_missing = 0;
-        int compilations_failed = 0;
-        for (auto it = files.begin(), end = files.end(); it != end; ++it) {
-            if (it->compilation_failed)
-                compilations_failed++;
-            else if (it->compiled_dependencies < it->dependencies_count)
-                dependencies_missing++;
-        }
-
-        if (compilations_failed) {
-            context.log_info();
-            context.log_error("compilation failed for:");
-            for (SourceFile& file : files)
-                if (file.compilation_failed)
-                    std::cout << "        " << file.source_path << std::endl;
-            return false;
-        }
-        else if (dependencies_missing) {
-            context.log_info();
-            context.log_error("files are missing one or more dependencies:");
-            for (SourceFile& file : files)
-                if (file.compiled_dependencies < file.dependencies_count)
-                    std::cout << "        " << file.source_path << std::endl;
-
-            bool circular_dependencies = false;
-            for (SourceFile& file : files) {
-                if (file.compiled_dependencies < file.dependencies_count) {
-                    if (depends_on(file, file)) {
-                        if (!circular_dependencies) {
-                            circular_dependencies = true;
-                            context.log_info();
-                            context.log_error("circular dependencies found:");
-                        }
-                        std::cout << "        ";
-                        depends_on_print(file, file);
-                        std::cout << " -> " << file.source_path << std::endl;
-                    }
-                }
-            }
-            return false;
-        }
-
-        return true;
-    }
-
-    /** Return true if the given depends (indirectly) on the given dependency. Is slow */
-    bool depends_on(SourceFile& file, SourceFile& dependency) {
-        for (SourceFile* dependent : dependency.dependent_files) {
-            if (dependent == &file) return true;
-            else if (depends_on(file, *dependent)) return true;
-        }
-        return false;
-    }
-    bool depends_on_print(SourceFile& file, SourceFile& dependency) {
-        for (SourceFile* dependent : dependency.dependent_files) {
-            if (dependent == &file) {
-                std::cout << dependent->source_path;
-                return true;
-            }
-            else if (depends_on_print(file, *dependent)) {
-                std::cout << " -> " << dependent->source_path;
-                return true;
-            }
-        }
-        return false;
-    }
-
-private:
-    void add_to_compile_queue(SourceFile& file) {
-        if (file.need_compile) {
-            pool.enqueue([&] -> bool {
-                bool success = file.compile(context);
-                if (success)
-                    mark_compiled(file);
-                context.log_step_task();
-                return !success;
-            });
-        }
-        else // We don't need to compile this file, so add its dependencies to the queue.
-            mark_compiled(file);
-    }
-
-    void mark_compiled(SourceFile& file) {
-        for (SourceFile* child : file.dependent_files)
-            if (++child->compiled_dependencies == child->dependencies_count)
-                add_to_compile_queue(*child);
-    }
-};
-
-
 struct Main {
     Context context;
 
     // We use a deque so that source files dont need to be moved.
     std::deque<SourceFile> files;
+    DependencyTree dependency_tree;
 
     size_t path_index = 0;
 
@@ -336,7 +72,6 @@ struct Main {
             context.compiler = env_compiler;
         if (context.compiler.contains("gcc") || context.compiler.contains("g++"))
             context.compiler_type = Context::GCC;
-
 
         build_command << context.compiler << ' ';
 
@@ -364,7 +99,7 @@ struct Main {
                     link_arguments << arg << ' ';
                 }
                 else if (arg[1] == 'I') {
-                    std::string_view dir = std::string_view(arg).substr(2);
+                    std::string_view dir = arg.substr(2);
                     if (dir[0] == '"' && dir[dir.length() - 1] == '"')
                         dir = dir.substr(1, dir.length() - 2);
                     context.build_include_dirs.push_back(dir);
@@ -586,20 +321,13 @@ struct Main {
     }
 
     bool compile_and_link() {
-        // Make sure all the files are compiled.
-        uint compile_count;
-        {
-            // Read to files to get all the dependencies.
-            DependencyTreeBuilder builder{context, files, context.job_count};
-            if (!builder.build())
-                return false;
-            compile_count = builder.mark_for_compilation();
-        }
-        if (compile_count != 0) {
-            Compiler compiler{context, files, context.job_count};
-            if (!compiler.compile_files(compile_count))
-                return false;
-        }
+        // Read to files to get all the dependencies.
+        if (!dependency_tree.build(context, files))
+            return false;
+
+        uint compile_count = dependency_tree.mark_for_compilation(context, files);
+        if (compile_count != 0 && !parallel_compile_files(context, files, compile_count))
+            return false;
 
         bool do_link = compile_count != 0u || !fs::exists(context.output_file);
 

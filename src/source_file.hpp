@@ -9,7 +9,8 @@
 
 namespace fs = std::filesystem;
 
-struct SourceFile {
+class SourceFile {
+public:
     enum type_t {
         UNIT,            // A C++ source file/translation unit
         C_UNIT,          // A C source file/translation unit TODO
@@ -67,9 +68,8 @@ public:
     void set_compile_path(const Context& context);
 
     /** Read the dependencies directly from the file. */
-    void read_dependencies(Context& context);
+    void read_dependencies(const Context& context);
 
-public:
     /** Check if the file has changed since compilation. */
     bool has_source_changed();
 
@@ -83,7 +83,6 @@ public:
     // Returns true if no errors occurred.
     bool compile(Context& context, bool live_compile = false);
     void replace_functions(Context& context);
-
 };
 
 

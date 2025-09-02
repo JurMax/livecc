@@ -28,7 +28,8 @@ enum build_type_t {
     STANDALONE,   // Build as a standalone executable.
 };
 
-struct Context {
+class Context {
+public:
     fs::path working_directory;
     fs::path output_file;
     fs::path output_directory;
@@ -65,10 +66,10 @@ struct Context {
     std::vector<fs::path> temporary_files;
 
 public:
-    std::mutex print_mutex;
-    std::string task_name;
-    int bar_task_current;
-    int bar_task_total;
+    mutable std::string task_name;
+    mutable std::mutex print_mutex;
+    mutable int bar_task_current;
+    mutable int bar_task_total;
     int term_width;
 
 public:
@@ -80,7 +81,7 @@ public:
     Context(const Context&) = delete;
 
     template<typename ...Args>
-    void log_info(const Args&... args) {
+    void log_info(const Args&... args) const {
         std::unique_lock<std::mutex> lock(print_mutex);
         std::ostringstream ss;
         ((ss << args), ...);
@@ -100,25 +101,25 @@ public:
     //     log_info(args...);
     // }
     template<typename ...Args>
-    inline void log_error(const Args&... args) {
+    inline void log_error(const Args&... args) const {
         log_info("\e[1;31mERROR:\e[0m \e[1m",  args..., "\e[0m");
     }
 
-    inline void log_set_task(const std::string_view& task, int task_total) {
+    inline void log_set_task(const std::string_view& task, int task_total) const {
         task_name = task;
         bar_task_total = task_total;
         bar_task_current = 0;
     }
-    inline void log_clear_task() {
+    inline void log_clear_task() const {
         task_name.clear();
     }
-    inline void log_step_task() {
+    inline void log_step_task() const {
         std::unique_lock<std::mutex> lock(print_mutex);
         ++bar_task_current;
         print_bar();
     }
 private:
-    inline void print_bar() {
+    inline void print_bar() const {
         std::cout << task_name << " [";
         int length = term_width - task_name.length() - 2 - 7;
         int progress = bar_task_current * length / bar_task_total;

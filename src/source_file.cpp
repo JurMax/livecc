@@ -8,10 +8,12 @@
 #include <string_view>
 #include <system_error>
 #include <format>
-#include <thread>
 
 #include "context.hpp"
+#include "module_mapper_pipe.hpp"
 #include "plthook/plthook.h"
+
+using namespace std::literals;
 
 // Make a path lexically normal, and possibly relative to the working directory
 static fs::path normalise_path(const Context& context, const fs::path& path) {
@@ -245,7 +247,7 @@ void SourceFile::set_compile_path(const Context& context) {
     }
 }
 
-void SourceFile::read_dependencies(Context& context) {
+void SourceFile::read_dependencies(const Context& context) {
     if (compiled_path.empty())
         set_compile_path(context);
 
@@ -313,8 +315,12 @@ bool SourceFile::has_source_changed() {
     return false;
 }
 
+inline bool use_timestamp(const Context& context, const SourceFile& f) {
+    return f.type == SourceFile::BARE_INCLUDE || (!context.use_header_units && f.is_header());
+};
+
 std::string SourceFile::get_build_command(const Context& context, const fs::path& output_path, bool live_compile) {
-    if (type == BARE_INCLUDE || (!context.use_header_units && is_header()))
+    if (use_timestamp(context, *this))
         return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
@@ -363,50 +369,7 @@ std::string_view SourceFile::pch_include() {
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
 }
 
-struct GCCModulePipe {
-    std::thread thread;
-    int input_pipe[2];
-    int output_pipe[2];
-
-    GCCModulePipe(Context& context) {
-        std::cout << "Create 0" << std::endl;
-        pipe(input_pipe);
-        pipe(output_pipe);
-        std::cout << "Create 1" << std::endl;
-        thread = std::thread(thread_func, &context, input_pipe[0], output_pipe[1]);
-        std::cout << "Create 2" << std::endl;
-    }
-
-    std::string mapper_arg() {
-        return std::format(" -fmodule-mapper=\"<{}>{}\"", output_pipe[0], input_pipe[1]);
-    }
-
-    ~GCCModulePipe() {
-        close(input_pipe[0]);
-        close(input_pipe[1]);
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        // Thread gets closed automatically.
-    }
-
-    static void thread_func(Context* context, int input_fd, int output_fd) {
-        char buffer[4096];
-        while (true) {
-            context->log_info(" WAITING FOR READ");
-            if (read(input_fd, buffer, sizeof(buffer)) <= 0)
-                return;
-            context->log_info("");
-            context->log_info("BUFF: ", buffer);
-            context->log_info(" WOWWW OKE");
-            context->log_info(" DOING WRITE");
-            if (write(output_fd, buffer, strlen(buffer)) == -1) // Just echo.
-                return;
-        }
-    }
-};
-
-
-// Returns true if an error occurred.
+// Returns true if an error occurred. // TODO: move to compiler.cpp
 bool SourceFile::compile(Context& context, bool live_compile) {
     std::error_code ec;
 
@@ -420,7 +383,7 @@ bool SourceFile::compile(Context& context, bool live_compile) {
     }
     else output_path = compiled_path;
 
-    std::optional<GCCModulePipe> pipe;
+    std::optional<ModuleMapperPipe> pipe;
     std::string build_command = get_build_command(context, output_path, do_live_compile);
 
     // Create PCH file.
@@ -430,9 +393,9 @@ bool SourceFile::compile(Context& context, bool live_compile) {
         else
             std::ofstream{fs::path{pch_include()}} << "#error PCH not included\n";
     }
-    else if (context.compiler_type == Context::GCC) {
-        // pipe.emplace(context); // TODO TODO
-        // build_command += pipe->mapper_arg();
+    else if (context.compiler_type == Context::GCC && !use_timestamp(context, *this)) {
+        pipe.emplace(context, *this);
+        build_command += pipe->mapper_arg();
     }
 
     if (context.verbose)
