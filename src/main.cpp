@@ -12,11 +12,13 @@
 #include "plthook/plthook.h"
 
 #include "dependency_tree.hpp"
-#include "compiler.hpp"
+#include "compile.hpp"
 #include "thread_pool.hpp"
 
 #include <charconv>
+#include <elf.h>
 #include <filesystem>
+#include <link.h>
 #include <string>
 #include <system_error>
 #include <stdio.h>
@@ -37,17 +39,19 @@
 namespace fs = std::filesystem;
 using namespace std::literals;
 
-#define CHK_PH(func) do { \
-    if (func != 0) { \
-        fprintf(stderr, "%s error: %s\n", #func, plthook_error()); \
-        exit(1); \
-    } \
-} while (0)
-
-
 typedef void dll_callback_func_t(void);
 typedef int set_callback_func_t(dll_callback_func_t*);
 
+// Get the table of string from a link map handle.
+static std::string_view get_string_table(link_map* handle) {
+    size_t str_table_size = 0;
+    const char* str_table = nullptr;
+    for (auto ptr = handle->l_ld; ptr->d_tag; ++ptr) {
+        if (ptr->d_tag == DT_STRTAB) str_table = (const char*)ptr->d_un.d_ptr;
+        else if (ptr->d_tag == DT_STRSZ) str_table_size = ptr->d_un.d_val;
+    }
+    return {str_table, str_table_size};
+}
 
 struct Main {
     Context context;
@@ -326,7 +330,7 @@ struct Main {
             return false;
 
         uint compile_count = dependency_tree.mark_for_compilation(context, files);
-        if (compile_count != 0 && !parallel_compile_files(context, files, compile_count))
+        if (compile_count != 0 && !compile_all(context, files))
             return false;
 
         bool do_link = compile_count != 0u || !fs::exists(context.output_file);
@@ -366,7 +370,10 @@ public:
         if (context.handle == nullptr)
             context.log_error("loading application failed:", dlerror());
 
-        CHK_PH(plthook_open_by_handle(&context.plthook, context.handle));
+        if (plthook_open_by_handle(&context.plthook, context.handle) != 0) {
+            context.log_error("plthook error: ", plthook_error());
+            return;
+        }
 
         set_callback_func_t* set_callback = (set_callback_func_t*)dlsym(context.handle, "setDLLCallback");
         if (set_callback == nullptr)
@@ -405,6 +412,36 @@ public:
         files.clear();
     }
 
+    void load_and_replace_functions(const fs::path& obj_path) {
+        link_map* handle = (link_map*)dlopen(obj_path.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
+        if (handle == nullptr) {
+            context.log_info("Error loading ", obj_path);
+            return;
+        }
+
+        context.loaded_handles.push_back(handle);
+        std::string_view str_table = get_string_table(handle);
+
+        for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
+            if (str_table[i] == '\0') {
+                const char* name = &str_table[i + 1];
+                void* func = dlsym(handle, name);
+                // std::cout << name << std::endl;
+
+                if (func != nullptr && strlen(name) > 3) {
+                    bool is_cpp = name[0] == '_' && name[1] == 'Z';
+                    if (is_cpp) {
+                        int error = plthook_replace(context.plthook, name, func, NULL);
+                        (void)error;
+
+                    // if (error == 0)
+                        // std::cout << "        " << error << std::endl;
+                    }
+                }
+            }
+        }
+    }
+
     void update() {
         path_index = (path_index + 1) % files.size();
 
@@ -412,8 +449,12 @@ public:
         if (file.has_source_changed()) {
             context.log_info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
-            if (file.compile(context, true)) {
-                file.replace_functions(context);
+
+            fs::path output_path = context.output_directory / "tmp"
+                    / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
+            context.temporary_files.push_back(output_path);
+            if (compile_file(context, file, output_path, true)) {
+                load_and_replace_functions(output_path);
                 context.log_info("Done!");
             }
         }

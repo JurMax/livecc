@@ -12,7 +12,7 @@ class ModuleMapperPipe {
     int output_pipe[2];
 
 public:
-    ModuleMapperPipe(Context& context, SourceFile& file);
+    ModuleMapperPipe(const Context& context, SourceFile& file);
     ~ModuleMapperPipe();
 
     std::string mapper_arg();

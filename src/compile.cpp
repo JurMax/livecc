@@ -1,18 +1,22 @@
-#include "compiler.hpp"
+#include "compile.hpp"
+#include "module_mapper_pipe.hpp"
 #include "thread_pool.hpp"
+
+#include <algorithm>
+#include <fstream>
 
 
 /**
  * Compile te files that need to be compiled.
  */
 struct Compiler {
-    Context& context;
+    const Context& context;
     ThreadPool pool;
 
     void add_to_compile_queue(SourceFile& file) {
         if (file.need_compile) {
             pool.enqueue([&] -> bool {
-                bool success = file.compile(context);
+                bool success = compile_file(context, file);
                 if (success)
                     mark_compiled(file);
                 context.log_step_task();
@@ -54,7 +58,56 @@ static bool depends_on_print(SourceFile& file, SourceFile& dependency) {
 }
 
 
-bool parallel_compile_files(Context& context, std::deque<SourceFile>& files, size_t compile_count) {
+// Returns true if an error occurred. // TODO: move to compiler.cpp
+bool compile_file(const Context& context, SourceFile& file, const std::filesystem::path& output_path, bool live_compile) {
+
+    // Get the output path. This differs from compile_path if live compile is true.
+    std::string build_command = file.get_build_command(context, output_path, live_compile);
+    std::optional<ModuleMapperPipe> pipe;
+    std::error_code ec;
+
+    // Create PCH file.
+    if (file.type == SourceFile::PCH) {
+        if (context.compiler_type == Context::GCC)
+            fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
+        else
+            std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
+    }
+    else if (context.compiler_type == Context::GCC && !file.uses_timestamp(context)) {
+        pipe.emplace(context, file);
+        build_command += pipe->mapper_arg();
+    }
+
+    if (context.verbose)
+        context.log_info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
+    else
+        context.log_info("Compiling ", file.source_path, " to ", output_path);
+
+    // Run the command, and exit when interrupted.
+    int err = system(build_command.c_str());
+    if (err != 0)
+        file.compilation_failed = true;
+
+    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
+        exit(1); // TODO: this is ugly, we have to shut down gracefully.
+
+    if (file.compilation_failed) {
+        fs::remove(output_path, ec);
+        return false;
+    }
+
+    file.latest_obj = output_path;
+    file.compiled_time = fs::last_write_time(output_path, ec);
+    return true;
+}
+
+bool compile_file(const Context& context, SourceFile& file) {
+    return compile_file(context, file, file.compiled_path, false);
+}
+
+
+bool compile_all(const Context& context, std::deque<SourceFile>& files) {
+    size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) { return f.need_compile; });
     context.log_set_task("COMPILING", compile_count);
     Compiler compiler{context, context.job_count};
 

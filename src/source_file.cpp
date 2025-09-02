@@ -1,17 +1,14 @@
 #include "source_file.hpp"
 
+#include "context.hpp"
+#include "module_mapper_pipe.hpp"
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <elf.h>
-#include <link.h>
 #include <string_view>
 #include <system_error>
 #include <format>
-
-#include "context.hpp"
-#include "module_mapper_pipe.hpp"
-#include "plthook/plthook.h"
 
 using namespace std::literals;
 
@@ -38,14 +35,13 @@ struct Parser {
     enum Return { OK, OPEN_FAILED, UNEXPECTED_END, PATH_TOO_LONG };
 
     SourceFile& file;
+    std::ifstream f; // TODO: use a direct buffer here.
+
     char buffer[4096];
     size_t buf_len = 0;
-
-    std::ifstream f; // TODO: use a direct buffer here.
     char c;
 
-    Parser(SourceFile& file) : file(file), f(file.source_path) {
-    }
+    Parser(SourceFile& file) : file(file), f(file.source_path) {}
 
     Return parse(const Context& context) {
         if (!f.is_open())
@@ -315,12 +311,12 @@ bool SourceFile::has_source_changed() {
     return false;
 }
 
-inline bool use_timestamp(const Context& context, const SourceFile& f) {
-    return f.type == SourceFile::BARE_INCLUDE || (!context.use_header_units && f.is_header());
+bool SourceFile::uses_timestamp(const Context& context) {
+    return type == SourceFile::BARE_INCLUDE || (!context.use_header_units && is_header());
 };
 
 std::string SourceFile::get_build_command(const Context& context, const fs::path& output_path, bool live_compile) {
-    if (use_timestamp(context, *this))
+    if (uses_timestamp(context))
         return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
@@ -367,96 +363,4 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
 std::string_view SourceFile::pch_include() {
      // remove ".gch"
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
-}
-
-// Returns true if an error occurred. // TODO: move to compiler.cpp
-bool SourceFile::compile(Context& context, bool live_compile) {
-    std::error_code ec;
-
-    // Get the output path. This differs from compile_path if live compile is true.
-    fs::path output_path;
-    bool do_live_compile = live_compile && type == UNIT;
-    if (do_live_compile) {
-        output_path = context.output_directory / "tmp"
-            / ("tmp" + (std::to_string(context.temporary_files.size()) + ".so"));
-        context.temporary_files.push_back(latest_obj);
-    }
-    else output_path = compiled_path;
-
-    std::optional<ModuleMapperPipe> pipe;
-    std::string build_command = get_build_command(context, output_path, do_live_compile);
-
-    // Create PCH file.
-    if (type == SourceFile::PCH) {
-        if (context.compiler_type == Context::GCC)
-            fs::copy_file(source_path, fs::path{pch_include()}, fs::copy_options::overwrite_existing, ec);
-        else
-            std::ofstream{fs::path{pch_include()}} << "#error PCH not included\n";
-    }
-    else if (context.compiler_type == Context::GCC && !use_timestamp(context, *this)) {
-        pipe.emplace(context, *this);
-        build_command += pipe->mapper_arg();
-    }
-
-    if (context.verbose)
-        context.log_info("Compiling ", source_path, " to ", output_path, " using: ", build_command);
-    else
-        context.log_info("Compiling ", source_path, " to ", output_path);
-
-    // Run the command, and exit when interrupted.
-    int err = system(build_command.c_str());
-    if (err != 0)
-        compilation_failed = true;
-
-    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
-        exit(1); // TODO: this is ugly, we have to shut down gracefully.
-
-    if (compilation_failed) {
-        fs::remove(compiled_path, ec);
-        return false;
-    }
-
-    latest_obj = output_path;
-    compiled_time = fs::last_write_time(compiled_path, ec);
-    return true;
-}
-
-void SourceFile::replace_functions(Context& context) {
-    link_map* handle = (link_map*)dlopen(latest_obj.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
-    if (handle == nullptr) {
-        context.log_info("Error loading ", latest_obj);
-        return;
-    }
-
-    context.loaded_handles.push_back(handle);
-    std::string_view str_table = get_string_table(handle);
-
-    for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
-        if (str_table[i] == '\0') {
-            const char* name = &str_table[i + 1];
-            void* func = dlsym(handle, name);
-            // std::cout << name << std::endl;
-
-            if (func != nullptr && strlen(name) > 3) {
-                bool is_cpp = name[0] == '_' && name[1] == 'Z';
-                if (is_cpp) {
-                    int error = plthook_replace(context.plthook, name, func, NULL);
-                    (void)error;
-
-                // if (error == 0)
-                    // std::cout << "        " << error << std::endl;
-                }
-            }
-        }
-    }
-}
-
-std::string_view get_string_table(link_map* handle) {
-    size_t str_table_size = 0;
-    const char* str_table = nullptr;
-    for (auto ptr = handle->l_ld; ptr->d_tag; ++ptr) {
-        if (ptr->d_tag == DT_STRTAB) str_table = (const char*)ptr->d_un.d_ptr;
-        else if (ptr->d_tag == DT_STRSZ) str_table_size = ptr->d_un.d_val;
-    }
-    return {str_table, str_table_size};
 }

@@ -63,6 +63,7 @@ public:
 
     inline bool is_header() const { return type == HEADER || type == SYSTEM_HEADER; }
     inline bool is_include() const { return is_header() || type == PCH || type == BARE_INCLUDE; }
+    bool uses_timestamp( const Context& context );
 
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(const Context& context);
@@ -79,16 +80,4 @@ public:
     }
 
     std::string_view pch_include();
-
-    // Returns true if no errors occurred.
-    bool compile(Context& context, bool live_compile = false);
-    void replace_functions(Context& context);
 };
-
-
-// Get the table of string from a link map handle.
-std::string_view get_string_table(link_map* handle);
-
-
-// bool file_exists(const char* path);
-// std::optional<timespec> get_write_time(const char* path);

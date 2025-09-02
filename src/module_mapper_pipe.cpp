@@ -20,7 +20,7 @@ static constexpr inline ulong hash(auto iterable) {
 // SOURCES:
 // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2020/p1184r2.pdf
 // https://github.com/urnathan/libcody
-static void thread_func(Context* context, SourceFile* file, int input_fd, int output_fd) {
+static void thread_func(const Context* context, SourceFile* file, int input_fd, int output_fd) {
     char buffer[8192];
     constexpr auto as_string = std::views::transform([] (auto i) { return std::string_view{i}; });
     const auto write = [&] (auto... view) {
@@ -94,7 +94,7 @@ static void thread_func(Context* context, SourceFile* file, int input_fd, int ou
 }
 
 
-ModuleMapperPipe::ModuleMapperPipe(Context& context, SourceFile& file) {
+ModuleMapperPipe::ModuleMapperPipe(const Context& context, SourceFile& file) {
     pipe(input_pipe);
     pipe(output_pipe);
     thread = std::thread(thread_func, &context, &file, input_pipe[0], output_pipe[1]);
