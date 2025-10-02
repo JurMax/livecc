@@ -75,7 +75,8 @@ struct Main {
             context.compiler = env_compiler;
         else if (const char* env_compiler = std::getenv("CC"))
             context.compiler = env_compiler;
-        if (context.compiler.contains("gcc") || context.compiler.contains("g++"))
+        if (context.compiler.contains("gcc")
+            || (context.compiler.contains("g++") && !context.compiler.contains("clang++")))
             context.compiler_type = Context::GCC;
 
         build_command << context.compiler << ' ';
@@ -468,6 +469,9 @@ public:
                 load_and_replace_functions(output_path);
                 context.log.info("Done!");
             }
+
+            // TODO: try to rebuild the entire thing, but make it
+            // cancelable so any further changes can also trigger a rebuild.
         }
     }
 

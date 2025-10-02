@@ -99,7 +99,7 @@ bool compile_file(const Context& context, SourceFile& file, const std::filesyste
     // Check if the process was successful.
     int err = pclose(process);
     if (!output.empty() && (file.type != SourceFile::SYSTEM_HEADER || err != 0)) // Don't output system header warnings.
-        context.log.info(std::string_view{output});
+        context.log.info(/*"\e[1m", file.source_path.native(), ":\e[0m\n",*/ std::string_view{output});
     if (err != 0)
         file.compilation_failed = true;
 
