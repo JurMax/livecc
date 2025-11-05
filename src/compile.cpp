@@ -11,20 +11,25 @@
  * Compile te files that need to be compiled.
  */
 struct Compiler {
-    const Context& context;
+    struct FileInfo {
+        bool failed = false;
+        std::atomic<int> compiled_parents = 0;
+    };
+
+    Context const& context;
     std::span<SourceFile> files;
-    std::span<std::atomic<int>> compiled_parents;
-    std::span<char> failed;
+    std::span<FileInfo> info;
     ThreadPool pool;
 
     void add_to_compile_queue(uint file) {
         if (files[file].need_compile) {
             pool.enqueue([this, file] -> bool {
                 bool success = compile_file(context, files[file]);
-                failed[file] = !success;
+                info[file].failed = !success;
                 if (success)
                     mark_compiled(files[file]);
-                context.log.step_task();
+                if (!files[file].compile_to_timestamp())
+                    context.log.step_task();
                 return !success;
             });
         }
@@ -33,15 +38,15 @@ struct Compiler {
     }
 
     void mark_compiled(SourceFile& file) {
-        for (uint child : file.dependent_files)
-            if (++compiled_parents[child] == files[child].parent_count)
+        for (uint child : file.children)
+            if (++info[child].compiled_parents == files[child].parents.size())
                 add_to_compile_queue(child);
     }
 };
 
 /** Return true if the given depends (indirectly) on the given dependency. Is slow */
 static bool depends_on(std::span<SourceFile> files, uint file, uint dependency) {
-    for (uint child : files[dependency].dependent_files) {
+    for (uint child : files[dependency].children) {
         if (child == file) return true;
         else if (depends_on(files, file, child)) return true;
     }
@@ -49,7 +54,7 @@ static bool depends_on(std::span<SourceFile> files, uint file, uint dependency) 
 }
 
 static bool depends_on_print(std::span<SourceFile> files, uint file, uint dependency) {
-    for (uint child : files[dependency].dependent_files) {
+    for (uint child : files[dependency].children) {
         if (child == file) {
             std::cout << files[child].source_path;
             return true;
@@ -64,7 +69,14 @@ static bool depends_on_print(std::span<SourceFile> files, uint file, uint depend
 
 
 // Returns true if an error occurred. // TODO: move to compiler.cpp
-bool compile_file(const Context& context, SourceFile& file, const std::filesystem::path& output_path, bool live_compile) {
+bool compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
+    // If the output is only a timestamp, just update it.
+    if (file.compile_to_timestamp()) {
+        file.compiled_time = file.source_time;
+        std::ofstream stream(output_path);
+        return stream.is_open();
+    }
+
     std::string build_command = file.get_build_command(context, output_path, live_compile);
     std::optional<ModuleMapperPipe> module_pipe;
     std::error_code ec;
@@ -76,7 +88,7 @@ bool compile_file(const Context& context, SourceFile& file, const std::filesyste
         else
             std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
     }
-    else if (context.compiler_type == Context::GCC && !file.uses_timestamp(context)) {
+    else if (context.compiler_type == Context::GCC) {
         module_pipe.emplace(context, file);
         build_command += module_pipe->mapper_arg();
     }
@@ -110,49 +122,50 @@ bool compile_file(const Context& context, SourceFile& file, const std::filesyste
 
     if (err != 0) {
         fs::remove(output_path, ec);
+        file.compiled_time = file.source_time;
         return false;
     }
-
-    file.compiled_time = fs::last_write_time(output_path, ec);
-    return true;
+    else {
+        file.compiled_time = fs::last_write_time(file.source_path, ec);
+        return true;
+    }
 }
 
-bool compile_file(const Context& context, SourceFile& file) {
+bool compile_file(Context const& context, SourceFile& file) {
     return compile_file(context, file, file.compiled_path, false);
 }
 
 
-bool compile_all(const Context& context, std::span<SourceFile> files) {
-    size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) { return f.need_compile; });
+bool compile_all(Context const& context, std::span<SourceFile> files) {
+    size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
+        return f.need_compile && !f.compile_to_timestamp();
+    });
     context.log.set_task("COMPILING", compile_count);
 
-    std::vector<char> compilation_failed(files.size(), false);
-
-    std::vector<std::atomic<int>> compiled_parents(files.size());
-    for (auto& d : compiled_parents) std::atomic_init(&d, 0);
+    std::vector<Compiler::FileInfo> info(files.size());
 
     // Compile everything.
     {
-        Compiler compiler{context, files, compiled_parents, compilation_failed, context.job_count};
+        Compiler compiler{context, files, info, context.job_count};
 
         // Add all files that have no dependencies to the compile queue.
         // As these compile they will add all the other files too.
         for (uint i : Range(files))
-            if (files[i].parent_count == 0)
+            if (files[i].parents.size() == 0)
                 compiler.add_to_compile_queue(i);
 
         compiler.pool.join();
         context.log.clear_task();
-    }
+}
 
     // Check for errors.
     {
         bool some_missing_dependencies = false;
         bool some_failed = false;
         for (uint i : Range(files)) {
-            if (compilation_failed[i])
+            if (info[i].failed)
                 some_failed = true;
-            else if (compiled_parents[i] < files[i].parent_count)
+            else if (info[i].compiled_parents < files[i].parents.size())
                 some_missing_dependencies = true;
         }
 
@@ -161,12 +174,12 @@ bool compile_all(const Context& context, std::span<SourceFile> files) {
             context.log.info();
             context.log.error("compilation failed for:");
             for (uint i : Range(files))
-                if (compilation_failed[i])
+                if (info[i].failed)
                     std::cout << "        " << files[i].source_path << std::endl;
             if (some_missing_dependencies) {
                 std::cout << std::endl;
                 for (uint i : Range(files))
-                    if (compiled_parents[i] < files[i].parent_count)
+                    if (info[i].compiled_parents < files[i].parents.size())
                         std::cout << "        " << files[i].source_path << std::endl;
             }
             return false;
@@ -175,12 +188,12 @@ bool compile_all(const Context& context, std::span<SourceFile> files) {
             context.log.info();
             context.log.error("files are missing one or more dependencies:");
             for (uint i : Range(files))
-                if (compiled_parents[i] < files[i].parent_count)
+                if (info[i].compiled_parents < files[i].parents.size())
                     std::cout << "        " << files[i].source_path << std::endl;
 
             bool circular_dependencies = false;
             for (uint i : Range(files)) {
-                if (compiled_parents[i] < files[i].parent_count) {
+                if (info[i].compiled_parents < files[i].parents.size()) {
                     if (depends_on(files, i, i)) {
                         if (!circular_dependencies) {
                             circular_dependencies = true;

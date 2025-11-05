@@ -456,7 +456,7 @@ public:
         path_index = (path_index + 1) % files.size();
 
         SourceFile& file = files[path_index];
-        if (file.has_source_changed()) {
+        if (file.type == SourceFile::UNIT && file.has_source_changed()) {
             context.log.info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
 
@@ -468,6 +468,10 @@ public:
             if (compile_file(context, file, output_path, true)) {
                 load_and_replace_functions(output_path);
                 context.log.info("Done!");
+            }
+            else {
+                // Compilation failed, don't try again until the file changes again.
+                file.compiled_time = file.source_time;
             }
 
             // TODO: try to rebuild the entire thing, but make it

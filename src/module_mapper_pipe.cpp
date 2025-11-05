@@ -94,7 +94,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
 }
 
 
-ModuleMapperPipe::ModuleMapperPipe(const Context& context, SourceFile& file) {
+ModuleMapperPipe::ModuleMapperPipe(Context const& context, SourceFile& file) {
     pipe(input_pipe);
     pipe(output_pipe);
     thread = std::thread(thread_func, &context, &file, input_pipe[0], output_pipe[1]);

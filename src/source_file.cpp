@@ -13,7 +13,7 @@
 using namespace std::literals;
 
 // Make a path lexically normal, and possibly relative to the working directory
-static fs::path normalise_path(const Context& context, const fs::path& path) {
+static fs::path normalise_path(Context const& context, const fs::path& path) {
     std::error_code err;
     fs::path absolute_path = fs::canonical(path, err);
     if (err)
@@ -43,7 +43,7 @@ struct Parser {
 
     Parser(SourceFile& file) : file(file), f(file.source_path) {}
 
-    Return parse(const Context& context) {
+    Return parse(Context const& context) {
         if (!f.is_open())
             return OPEN_FAILED;
         enum { INCLUDE, IMPORT, MODULE } read_mode;
@@ -100,7 +100,7 @@ struct Parser {
         write_characters:
             switch (read_mode) {
                 case INCLUDE: register_include(context); break;
-                case IMPORT: file.module_dependencies.push_back(std::string{buffer, buf_len}); break;
+                case IMPORT: file.parents.emplace_back(std::string{buffer, buf_len}, SourceFile::MODULE); break;
                 case MODULE: file.module_name = std::string{buffer, buf_len}; break;
             }
             c = read_char();
@@ -149,12 +149,13 @@ struct Parser {
         return buf_len != sizeof(buffer);
     }
 
-    void register_include(const Context& context) {
+    void register_include(Context const& context) {
         if (buf_len <= 2) return;
         fs::path path(std::string_view(buffer + 1, buf_len - 2));
 
         if (buffer[0] == '<') {
-            file.include_dependencies.emplace_back(path, SourceFile::SYSTEM_HEADER);
+            file.parents.emplace_back(path, context.use_header_units
+                    ? SourceFile::SYSTEM_HEADER_UNIT : SourceFile::SYSTEM_HEADER);
             return;
         }
 
@@ -171,13 +172,20 @@ struct Parser {
             try_add_include(context, "/usr/include" / path))
             return;
     }
-    bool try_add_include(const Context& context, const fs::path& path) {
+    bool try_add_include(Context const& context, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
-            auto type = SourceFile::get_type(path.native());
-            if (!type || (*type != SourceFile::HEADER))
-                type = SourceFile::BARE_INCLUDE;
-            file.include_dependencies.emplace_back(normalise_path(context, path), *type);
+            SourceFile::type_t type = SourceFile::get_type(path.native()).value_or(SourceFile::BARE_INCLUDE);
+            switch (type) {
+                case SourceFile::HEADER:
+                    if (context.use_header_units)
+                        type = SourceFile::HEADER_UNIT;
+                    break;
+                default:
+                    type = SourceFile::BARE_INCLUDE;
+                    break;
+            }
+            file.parents.emplace_back(normalise_path(context, path), type);
             return true;
         }
         return false;
@@ -185,7 +193,7 @@ struct Parser {
 };
 
 
-SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type)
+SourceFile::SourceFile(Context const& context, const fs::path& path, type_t type)
     : type(type), source_path(type != SYSTEM_HEADER ? normalise_path(context, path) : path) {
 }
 
@@ -205,7 +213,7 @@ SourceFile::SourceFile(const Context& context, const fs::path& path, type_t type
     return {};
 }
 
-void SourceFile::set_compile_path(const Context& context) {
+void SourceFile::set_compile_path(Context const& context) {
     if (type == SYSTEM_HEADER)
         compiled_path = context.output_directory / "system" / source_path;
     else {
@@ -222,16 +230,17 @@ void SourceFile::set_compile_path(const Context& context) {
             compiled_path += ".o"; break;
         case HEADER:
         case SYSTEM_HEADER:
-            compiled_path += context.use_header_units ? ".pcm" : ".timestamp"; break;
+        case BARE_INCLUDE:
+            compiled_path += ".timestamp"; break;
+        case HEADER_UNIT:
+        case SYSTEM_HEADER_UNIT:
+            compiled_path += ".pcm"; break;
         case PCH:
             compiled_path += ".gch"; break;
-        case BARE_INCLUDE:
-            compiled_path += ".timestamp";
-            break;
-    }
+        }
 }
 
-void SourceFile::read_dependencies(const Context& context) {
+void SourceFile::read_dependencies(Context const& context) {
     if (compiled_path.empty())
         set_compile_path(context);
 
@@ -252,14 +261,17 @@ void SourceFile::read_dependencies(const Context& context) {
         found_file: ;
     }
     else {
+        source_time.reset();
         source_write_time = fs::last_write_time(source_path, err);
 
         // Get the dependencies of anything but the system headers.
         Parser parser(*this);
-        switch (parser.parse(context)) {
-            case Parser::OK: break;
+        switch (err ? Parser::OPEN_FAILED : parser.parse(context)) {
+            case Parser::OK:
+                source_time = source_write_time;
+                break;
             case Parser::OPEN_FAILED:
-                // context.log.error("failed to open file ", source_path);
+                context.log.error("failed to open file ", source_path);
                 break;
             case Parser::UNEXPECTED_END:
                 context.log.error("parsing error in ", source_path);
@@ -270,18 +282,12 @@ void SourceFile::read_dependencies(const Context& context) {
         }
     }
 
-    if (!err)
-        source_time = source_write_time;
-
+    compiled_time.reset();
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
-    if (!err) {
+    if (!err)
         compiled_time = compiled_write_time;
-        has_changed = !source_time || source_time > compiled_time;
-    }
-    else {
+    else
         fs::create_directories(compiled_path.parent_path(), err);
-        has_changed = true;
-    }
 }
 
 
@@ -289,22 +295,20 @@ bool SourceFile::has_source_changed() {
     if (is_include())
         return false;
     std::error_code err;
-    fs::file_time_type new_write_time = fs::last_write_time(source_path, err);
+    fs::file_time_type new_source_time = fs::last_write_time(source_path, err);
     if (err)
         return true;
-    if (!compiled_time || *compiled_time < new_write_time) {
-        compiled_time = new_write_time;
-        return true;
+    else {
+        source_time = new_source_time;
+        return !compiled_time || new_source_time > *compiled_time;
     }
-    return false;
 }
-
-bool SourceFile::uses_timestamp(const Context& context) const {
-    return type == SourceFile::BARE_INCLUDE || (!context.use_header_units && is_header());
+bool SourceFile::compile_to_timestamp() const {
+    return compiled_path.string().ends_with(".timestamp");
 };
 
-std::string SourceFile::get_build_command(const Context& context, const fs::path& output_path, bool live_compile) {
-    if (uses_timestamp(context))
+std::string SourceFile::get_build_command(Context const& context, const fs::path& output_path, bool live_compile) const {
+    if (compile_to_timestamp())
         return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
@@ -340,11 +344,14 @@ std::string SourceFile::get_build_command(const Context& context, const fs::path
 
     command << '"' << source_path.native() << '"';
 
-    // Maybe use the gcm cache
-    if (!(context.use_header_units && context.compiler_type == Context::GCC && is_header()))
-        command << " -o \"" << output_path.native() << '"';
-    // else
-    //     command << " && touch \"" << output_path.native() << '"';
+    // GCC uses the IPC for this. // TODO: check if supplying the output is fine.
+    if (context.compiler_type == Context::GCC)
+        switch (type) {
+            case HEADER_UNIT: case SYSTEM_HEADER_UNIT: case MODULE: return command.str();
+            default: break;
+        }
+
+    command << " -o \"" << output_path.native() << '"';
     return command.str();
 }
 
