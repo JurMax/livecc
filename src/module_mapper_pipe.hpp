@@ -17,3 +17,4 @@ public:
 
     std::string mapper_arg();
 };
+

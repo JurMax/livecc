@@ -4,6 +4,8 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 ## TODO
 
+- Support for unity builds for standalone and shared.
+
 - Use the same canonical paths as GCC does in the header/module map, and use , instead of resolving it.
 - Support for importing header files -> merge the header file and the module file somehow:
 -- If --use-header-units is not used, the same file needs to be able to be used as an header if included and as a module if explicitly imported. (prob just treat it as a module header file, doesnt matter if some files have to wait a bit longer before its ready)
@@ -24,4 +26,4 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Allow changing the compiler from clang to other things like gcc.
 - GCC support by adding an support for -fmodule-mapper: https://gcc.gnu.org/wiki/cxx-modules#CMI_Location.
 
-- More sensible default warning maybe?
+- More sensible default warning maybe?1

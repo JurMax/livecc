@@ -57,8 +57,7 @@ static std::string_view get_string_table(link_map* handle) {
 struct Main {
     Context context;
 
-    // We use a deque so that source files dont need to be moved.
-    std::deque<SourceFile> files;
+    std::vector<SourceFile> files;
     DependencyTree dependency_tree;
 
     size_t path_index = 0;
@@ -76,7 +75,8 @@ struct Main {
         else if (const char* env_compiler = std::getenv("CC"))
             context.compiler = env_compiler;
         if (context.compiler.contains("gcc")
-            || (context.compiler.contains("g++") && !context.compiler.contains("clang++")))
+            || (context.compiler.contains("g++")
+                && !context.compiler.contains("clang++")))
             context.compiler_type = Context::GCC;
 
         build_command << context.compiler << ' ';

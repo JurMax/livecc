@@ -4,7 +4,6 @@
 #include <map>
 #include <set>
 #include <filesystem>
-#include <atomic>
 #include <optional>
 
 namespace fs = std::filesystem;
@@ -26,32 +25,35 @@ public:
     fs::path source_path; // always relative to the working directory.
     fs::path compiled_path;
 
-    // If its defined it means the file exists.
+    // If the corresponding time is defined it means the file exists.
     std::optional<fs::file_time_type> source_time;
     std::optional<fs::file_time_type> compiled_time;
-    bool has_changed = false;
-    bool need_compile = false;
-    bool visited = false;
-    bool compilation_failed = false;
+    bool has_changed = false;  // source time is newer than compiled time
+
+    bool need_compile;
+    bool visited; // temporary variable.
 
     // TODO: implement this. Also add support for header units. Used header units
     // should also be added to the source files with the header unit type
     std::string module_name; // only set for modules.
 
     // Type can be HEADER, SYSTEM_HEADER or INCLUDED_UNIT
-    // TODO: do these have to be a map and a set? Double dependencies should be fine.
-    std::map<fs::path, type_t> include_dependencies;
-    std::set<std::string> module_dependencies;
+    struct Dependency {
+        fs::path path;
+        type_t type;
+    };
+    std::vector<Dependency> include_dependencies;
+    std::vector<std::string> module_dependencies;
     std::vector<char> build_includes; // module includes to add to the build command.
 
     // RUNTIME:
     // Files that depend on this module or header. These get added to the
     // queue once this file is done with compiling, and they have no other
     // dependencies left.
-    std::vector<SourceFile*> dependent_files;
+    std::vector<uint> dependent_files;
 
-    std::atomic<int> compiled_dependencies; // When this is equal to dependencies_count, we can compile.
-    int dependencies_count = 0;
+    // std::atomic<int> compiled_dependencies; // When this is equal to parent_count, we can compile.
+    int parent_count = 0;
 
 public:
     SourceFile(const Context& context, const fs::path& path, type_t type);

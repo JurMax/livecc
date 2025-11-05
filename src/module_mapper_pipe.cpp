@@ -31,16 +31,16 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
         ssize_t num_read = read(input_fd, buffer, sizeof(buffer));
         if (num_read <= 0) return;
 
-        bool is_batch = false;             // Ignore final newline vvv
+        bool is_batch = false; // Ignore final newline ------------vvv
         for (auto line : std::string_view{buffer, (size_t)num_read - 1} | std::views::split(" ;\n"sv) | as_string) {
             if (is_batch && !write(" ;\n"sv))
                 return;
             is_batch = true;
-            auto range = line | std::views::split(' ') | as_string;
-            auto it = range.begin(), end = range.end();
+            auto args = line | std::views::split(' ') | as_string;
+            auto args_it = args.begin(), args_end = args.end();
             if (context->verbose)
                 context->log.info("GOT INPUT: ", line);
-            switch (hash(*it++)) {
+            switch (hash(*args_it++)) {
                 case hash("HELLO"sv):
                     if (!write("HELLO 1 LIVECC"sv))
                         return;
@@ -50,27 +50,27 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
                         return;
                     break;
                 case hash("MODULE-EXPORT"sv):
-                    if (it == end) goto err;
-                    if (*it != file->module_name)
-                        context->log.error("module names dont match: got ", *it, " but expected ", file->module_name);
+                    if (args_it == args_end) goto err;
+                    if (*args_it != file->module_name)
+                        context->log.error("module names dont match: got ", *args_it, " but expected ", file->module_name);
                     if (!write("PATHNAME \""sv, file->compiled_path.native(), "\""sv))
                         return;
                     break;
                 case hash("MODULE-COMPILED"sv):
-                    if (it == end) goto err;
+                    if (args_it == args_end) goto err;
                     // TODO: start compilations depending on this module.
                     if (!write("OK"sv))
                         return;
                     break;
                 case hash("MODULE-IMPORT"sv):
-                    if (it == end) goto err;
+                    if (args_it == args_end) goto err;
                     // TODO
                     context->log.error("not implemented: ", line);
                     if (!write("ERROR NOT_IMPLEMENTED"sv))
                         return;
                     break;
                 case hash("INCLUDE-TRANSLATE"sv):
-                    if (it == end) goto err;
+                    if (args_it == args_end) goto err;
                     // TODO: return pathname to header modules.
                     if (!write("BOOL TRUE"sv))
                         return;

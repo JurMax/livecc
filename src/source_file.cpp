@@ -48,53 +48,31 @@ struct Parser {
             return OPEN_FAILED;
         enum { INCLUDE, IMPORT, MODULE } read_mode;
         char end_quote;
-        bool got_space;
         c = read_char();
 
         empty_space: switch (c) { // anything after a newline.
-            case EOF: case '{': case '(': return OK;
+            case EOF: return OK;
             case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
-            case '#': goto include_i;
-            case 'i': goto import_m;
-            case 'm': goto module_o;
+            case '#': if (parse_word("include"sv)) { read_mode = INCLUDE; goto read_start; } else goto token;
+            case 'i': if (parse_word(  "mport"sv)) { read_mode =  IMPORT; goto read_start; } else goto token;
+            case 'm': if (parse_word(  "odule"sv)) { read_mode =  MODULE; goto read_start; } else goto token;
             default: c = read_char(); goto token;
         }
 
         token: switch (c) {  // Wait until we hit a newline or a ;
-            case EOF: case '{': case '(': return OK;
+            case EOF: return OK;
             case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             default: c = read_char(); goto token;
         }
 
-        include_i: if ((c = read_char()) == 'i') goto include_n; else goto token;
-        include_n: if ((c = read_char()) == 'n') goto include_c; else goto token;
-        include_c: if ((c = read_char()) == 'c') goto include_l; else goto token;
-        include_l: if ((c = read_char()) == 'l') goto include_u; else goto token;
-        include_u: if ((c = read_char()) == 'u') goto include_d; else goto token;
-        include_d: if ((c = read_char()) == 'd') goto include_e; else goto token;
-        include_e: if ((c = read_char()) == 'e') { read_mode = INCLUDE; goto read_start; } else goto token;
-
-        import_m: if ((c = read_char()) == 'm') goto import_p; else goto token;
-        import_p: if ((c = read_char()) == 'p') goto import_o; else goto token;
-        import_o: if ((c = read_char()) == 'o') goto import_r; else goto token;
-        import_r: if ((c = read_char()) == 'r') goto import_t; else goto token;
-        import_t: if ((c = read_char()) == 't') { read_mode = IMPORT; goto read_start; } else goto token;
-
-        module_o: if ((c = read_char()) == 'o') goto module_d; else goto token;
-        module_d: if ((c = read_char()) == 'd') goto module_u; else goto token;
-        module_u: if ((c = read_char()) == 'u') goto module_l; else goto token;
-        module_l: if ((c = read_char()) == 'l') goto module_e; else goto token;
-        module_e: if ((c = read_char()) == 'e') { read_mode = MODULE; goto read_start; } else goto token;
-
-        read_start: got_space = false; goto read_spaces;
-        read_spaces: switch (c = read_char()) {
+        read_start: switch (c) {
             case EOF: return UNEXPECTED_END;
             case '/': parse_comment(); [[fallthrough]];
-            case ' ': case '\t': case '\n': case '\r': got_space = true; goto read_spaces;
-            default: if (!got_space) goto token; [[fallthrough]];
-            case '"': case '<':
+            case ' ': case '\t': case '\n': case '\r': c = read_char(); goto read_start; // skip whitespace
+            case ';': c = read_char(); goto empty_space;
+            default:
                 buffer[0] = c;
                 buf_len = 1;
                 switch (c) {
@@ -122,11 +100,21 @@ struct Parser {
         write_characters:
             switch (read_mode) {
                 case INCLUDE: register_include(context); break;
-                case IMPORT: file.module_dependencies.insert(std::string{buffer, buf_len}); break;
+                case IMPORT: file.module_dependencies.push_back(std::string{buffer, buf_len}); break;
                 case MODULE: file.module_name = std::string{buffer, buf_len}; break;
             }
             c = read_char();
             goto empty_space;
+    }
+
+    inline bool parse_word( std::string_view word ) {
+        for (size_t i = 0; i < word.size(); ++i)
+            if ((c = read_char()) != word[i])
+                return false;
+        switch (c = read_char()) {
+            case ' ': case '\t': case '\n': case '\r': case '<': case '"': return true;
+            default: return false;
+        }
     }
 
     void parse_comment() {
@@ -166,7 +154,7 @@ struct Parser {
         fs::path path(std::string_view(buffer + 1, buf_len - 2));
 
         if (buffer[0] == '<') {
-            file.include_dependencies.emplace(path, SourceFile::SYSTEM_HEADER);
+            file.include_dependencies.emplace_back(path, SourceFile::SYSTEM_HEADER);
             return;
         }
 
@@ -189,7 +177,7 @@ struct Parser {
             auto type = SourceFile::get_type(path.native());
             if (!type || (*type != SourceFile::HEADER))
                 type = SourceFile::BARE_INCLUDE;
-            file.include_dependencies.emplace(normalise_path(context, path), *type);
+            file.include_dependencies.emplace_back(normalise_path(context, path), *type);
             return true;
         }
         return false;
