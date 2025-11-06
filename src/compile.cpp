@@ -25,13 +25,12 @@ struct Compiler {
         if (files[file].need_compile) {
             pool.enqueue([this, file] -> ErrorCode {
                 ErrorCode err = compile_file(context, files[file]);
-                if (err != ErrorCode::OK)
-                    info[file].failed = true;
-                else {
+                if (err == ErrorCode::OK)
                     mark_compiled(files[file]);
-                    if (!files[file].compile_to_timestamp())
-                        context.log.step_task();
-                }
+                else
+                    info[file].failed = true;
+                if (!files[file].compile_to_timestamp())
+                    context.log.step_task();
                 return err;
             });
         }
