@@ -27,6 +27,7 @@ void Context::Logging::increase_task_total(int amount) {
 void Context::Logging::clear_task() {
     std::unique_lock<std::mutex> lock(mutex);
     task_name.clear();
+    clear_term();
 }
 
 void Context::Logging::step_task() {

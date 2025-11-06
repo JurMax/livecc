@@ -23,14 +23,16 @@ struct Compiler {
 
     void add_to_compile_queue(uint file) {
         if (files[file].need_compile) {
-            pool.enqueue([this, file] -> bool {
-                bool success = compile_file(context, files[file]);
-                info[file].failed = !success;
-                if (success)
+            pool.enqueue([this, file] -> ErrorCode {
+                ErrorCode err = compile_file(context, files[file]);
+                if (err != ErrorCode::OK)
+                    info[file].failed = true;
+                else {
                     mark_compiled(files[file]);
-                if (!files[file].compile_to_timestamp())
-                    context.log.step_task();
-                return !success;
+                    if (!files[file].compile_to_timestamp())
+                        context.log.step_task();
+                }
+                return err;
             });
         }
         else // We don't need to compile this file, so add its dependencies to the queue.
@@ -69,12 +71,12 @@ static bool depends_on_print(std::span<SourceFile> files, uint file, uint depend
 
 
 // Returns true if an error occurred. // TODO: move to compiler.cpp
-bool compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
+ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
     // If the output is only a timestamp, just update it.
     if (file.compile_to_timestamp()) {
         file.compiled_time = file.source_time;
         std::ofstream stream(output_path);
-        return stream.is_open();
+        return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
 
     std::string build_command = file.get_build_command(context, output_path, live_compile);
@@ -114,8 +116,16 @@ bool compile_file(Context const& context, SourceFile& file, fs::path const& outp
 
     // Check if the process was successful.
     int err = pclose(process);
-    if (!output.empty() && (file.type != SourceFile::SYSTEM_HEADER || err != 0)) // Don't output system header warnings.
-        context.log.info(/*"\e[1m", file.source_path.native(), ":\e[0m\n",*/ std::string_view{output}); // TODO: expand long lines with indentation.
+    if (!output.empty())
+        switch (file.type) {
+            // Don't output system header warnings.
+            case SourceFile::SYSTEM_HEADER: case SourceFile::SYSTEM_HEADER_UNIT:
+                if (err == 0) break;
+                [[fallthrough]];
+            default:
+                context.log.info(/*"\e[1m", file.source_path.native(), ":\e[0m\n",*/ std::string_view{output}); // TODO: expand long lines with indentation.
+                break;
+        }
 
     if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
         exit(1); // TODO: this is ugly, we have to shut down gracefully.
@@ -123,20 +133,20 @@ bool compile_file(Context const& context, SourceFile& file, fs::path const& outp
     if (err != 0) {
         fs::remove(output_path, ec);
         file.compiled_time = file.source_time;
-        return false;
+        return ErrorCode::FAILED;
     }
     else {
         file.compiled_time = fs::last_write_time(file.source_path, ec);
-        return true;
+        return ErrorCode::OK;
     }
 }
 
-bool compile_file(Context const& context, SourceFile& file) {
+ErrorCode compile_file(Context const& context, SourceFile& file) {
     return compile_file(context, file, file.compiled_path, false);
 }
 
 
-bool compile_all(Context const& context, std::span<SourceFile> files) {
+ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
         return f.need_compile && !f.compile_to_timestamp();
     });
@@ -182,7 +192,7 @@ bool compile_all(Context const& context, std::span<SourceFile> files) {
                     if (info[i].compiled_parents < files[i].parents.size())
                         std::cout << "        " << files[i].source_path << std::endl;
             }
-            return false;
+            return ErrorCode::FAILED;
         }
         else if (some_missing_dependencies) {
             context.log.info();
@@ -206,9 +216,9 @@ bool compile_all(Context const& context, std::span<SourceFile> files) {
                     }
                 }
             }
-            return false;
+            return ErrorCode::FAILED;
         }
     }
 
-    return true;
+    return ErrorCode::OK;
 }

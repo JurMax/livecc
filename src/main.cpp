@@ -115,8 +115,8 @@ struct Main {
                     if (arg.length() == 5) next_arg_type = PCH;
                     else files.emplace_back(context, arg, SourceFile::PCH);
                 }
-                else if (arg == "--standalone") context.build_type = STANDALONE;
-                else if (arg == "--shared") context.build_type = SHARED;
+                else if (arg == "--standalone") context.build_type = BuildType::STANDALONE;
+                else if (arg == "--shared") context.build_type = BuildType::SHARED;
                 else if (arg == "--no-rebuild-with-O0") context.rebuild_with_O0 = false;
                 else if (arg == "--verbose") context.verbose = true;
                 else if (arg == "--test") context.test = true;
@@ -158,23 +158,23 @@ struct Main {
         // Set the output directory.
         context.output_directory = context.output_file.parent_path();
         switch (context.build_type) {
-            case LIVE:       context.output_directory /= "live"; break;
-            case SHARED:     context.output_directory /= "shared"; break;
-            case STANDALONE: context.output_directory /= "standalone"; break;
+            case BuildType::LIVE:       context.output_directory /= "live"; break;
+            case BuildType::SHARED:     context.output_directory /= "shared"; break;
+            case BuildType::STANDALONE: context.output_directory /= "standalone"; break;
         }
 
         // Rename the output file if no extension has been given.
         if (!context.output_file.has_extension()) {
             std::string new_filename = context.output_file.filename().string();
             switch (context.build_type) {
-                case LIVE:   new_filename = "lib" + new_filename + "_live.a"; break;
-                case SHARED: new_filename = "lib" + new_filename + ".a"; break;
-                case STANDALONE: break;
+                case BuildType::LIVE:   new_filename = "lib" + new_filename + "_live.a"; break;
+                case BuildType::SHARED: new_filename = "lib" + new_filename + ".a"; break;
+                case BuildType::STANDALONE: break;
             }
             context.output_file = context.output_file.parent_path() / new_filename;
         }
 
-        if (context.build_type == LIVE || context.build_type == SHARED) {
+        if (context.build_type == BuildType::LIVE || context.build_type == BuildType::SHARED) {
             build_command << "-fPIC ";
             link_arguments << "-shared ";
         }
@@ -184,7 +184,7 @@ struct Main {
         build_command << "-fdiagnostics-color=always -Winvalid-pch ";
 
         if (context.test) {
-            if (context.build_type == STANDALONE)
+            if (context.build_type == BuildType::STANDALONE)
                 context.log.error("tests can't be run in standalone mode!");
             else
                 build_command << "-DLCC_TEST ";
@@ -326,16 +326,19 @@ struct Main {
         }
     }
 
-    bool compile_and_link() {
+    ErrorCode compile_and_link() {
         // Read to files to get all the dependencies.
-        if (!dependency_tree.build(context, files))
-            return false;
+        if (dependency_tree.build(context, files) != ErrorCode::OK)
+            return ErrorCode::FAILED;
 
+        bool do_link = !fs::exists(context.output_file);
         uint compile_count = dependency_tree.mark_for_compilation(context, files);
-        if (compile_count != 0 && !compile_all(context, files))
-            return false;
 
-        bool do_link = compile_count != 0u || !fs::exists(context.output_file);
+        if (compile_count != 0) {
+            do_link = true;
+            if (compile_all(context, files) != ErrorCode::OK)
+                return ErrorCode::FAILED;
+        }
 
         // link all the files into one shared library.
         if (do_link) {
@@ -357,12 +360,12 @@ struct Main {
 
             if (int err = system(link_command.view().data())) {
                 context.log.error("error linking to ", context.output_file, ": ", err);
-                return false;
+                return ErrorCode::FAILED;
             }
         }
 
         context.log.info("");
-        return true;
+        return ErrorCode::OK;
     }
 
 public:
@@ -465,7 +468,7 @@ public:
             std::error_code ec;
             fs::create_directories(context.output_directory / "tmp", ec);
             runtime.temporary_files.push_back(output_path);
-            if (compile_file(context, file, output_path, true)) {
+            if (compile_file(context, file, output_path, true) == ErrorCode::OK) {
                 load_and_replace_functions(output_path);
                 context.log.info("Done!");
             }
@@ -508,10 +511,10 @@ public:
         context.log.set_task("TESTING", test_functions.size());
         ThreadPool pool(context.job_count);
         for (auto [name, func]: test_functions)
-            pool.enqueue([this, func] {
+            pool.enqueue([this, func] -> ErrorCode {
                 func();
                 context.log.step_task();
-                return false; // TODO: check for errors.
+                return ErrorCode::OK; // TODO: check for errors.
             });
         pool.join();
         context.log.clear_task();
@@ -544,10 +547,10 @@ int main(int argn, char** argv) {
         return 1;
     }
 
-    if (main.compile_and_link()) {
+    if (main.compile_and_link() == ErrorCode::OK) {
         if (main.context.test)
             main.run_tests();
-        else if (main.context.build_type == LIVE)
+        else if (main.context.build_type == BuildType::LIVE)
             main.start([] () { main_ptr->update(); });
     }
 

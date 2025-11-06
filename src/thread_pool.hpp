@@ -6,6 +6,8 @@
 #include <queue>
 #include <thread>
 
+#include "base.hpp"
+
 
 // Class that represents a simple thread pool
 class ThreadPool {
@@ -20,7 +22,7 @@ public:
         for (size_t i = 0; i < num_threads; ++i) {
             threads.emplace_back([this] {
                 while (true) {
-                    std::function<bool()> task;
+                    std::function<ErrorCode()> task;
 
                     // The reason for putting the below code
                     // here is to unlock the queue before
@@ -49,13 +51,13 @@ public:
                         number_working++;
                     }
 
-                    bool error = task();
+                    ErrorCode error = task();
 
                     // Stop if one of the tasks has an error.
                     {
                         std::unique_lock<std::mutex> lock(mutex);
                         number_working--;
-                        if (error) {
+                        if (error != ErrorCode::OK) {
                             got_error = true;
                             stop = true;
                         }
@@ -71,20 +73,16 @@ public:
 
     // Destructor to stop the thread pool
     ~ThreadPool() {
-        {
-            // Lock the queue to update the stop flag safely
-            std::unique_lock<std::mutex> lock(mutex);
-            stop = true;
-        }
-
-        // Notify all threads
+        // Lock the queue to update the stop flag safely
+        mutex.lock();
+        stop = true;
+        mutex.unlock();
         condition.notify_all();
 
         // Joining all worker threads to ensure they have
         // completed their tasks
-        for (auto& thread : threads) {
+        for (auto& thread : threads)
             thread.join();
-        }
     }
 
     void join() {
@@ -105,11 +103,10 @@ public:
     }
 
     // Enqueue task for execution by the thread pool
-    void enqueue(std::function<bool()> task) {
-        {
-            std::unique_lock<std::mutex> lock(mutex);
-            tasks.emplace(std::move(task));
-        }
+    void enqueue(std::function<ErrorCode()> task) {
+        mutex.lock();
+        tasks.emplace(std::move(task));
+        mutex.unlock();
         condition.notify_all();
     }
 
@@ -120,7 +117,7 @@ private:
     std::vector<std::thread> threads;
 
     // Queue of tasks
-    std::queue<std::function<bool()> > tasks;
+    std::queue<std::function<ErrorCode()> > tasks;
 
     // Mutex to synchronize access to shared data
     std::mutex mutex;

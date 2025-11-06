@@ -1,12 +1,11 @@
 #pragma once
 #include "context.hpp"
 
-#include <map>
-#include <set>
 #include <filesystem>
 #include <optional>
 
 namespace fs = std::filesystem;
+
 
 class SourceFile {
 public:
@@ -40,8 +39,6 @@ public:
 
     struct Dependency {
         fs::path path;
-
-        // Type can be HEADER, SYSTEM_HEADER or INCLUDED_UNIT, MODULE
         type_t type;
     };
 
@@ -69,8 +66,8 @@ public:
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(Context const& context);
 
-    /** Read the dependencies directly from the file. */
-    void read_dependencies(Context const& context);
+    /** Read the dependencies directly from the file. Return true on success. */
+    ErrorCode read_dependencies(Context const& context);
 
     /** Check if the file has changed since compilation. */
     bool has_source_changed();

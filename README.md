@@ -21,9 +21,7 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Use inotify to check for file changes while running in live reload mode.
 - Replace a lot of uses of fs::path and std::string to not allocate.
 - Test what happens with missing files and what should happen
-- Multiple PCH? --pch then applies to all files defined after it, or everything if only one is defined at all.
 - Support C style pch
-- Allow changing the compiler from clang to other things like gcc.
 - GCC support by adding an support for -fmodule-mapper: https://gcc.gnu.org/wiki/cxx-modules#CMI_Location.
 
 - More sensible default warning maybe?1

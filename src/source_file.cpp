@@ -32,8 +32,6 @@ static fs::path normalise_path(Context const& context, const fs::path& path) {
  * to extract the includes and modules in the fastest possible way.
  */
 struct Parser {
-    enum Return { OK, OPEN_FAILED, UNEXPECTED_END, PATH_TOO_LONG };
-
     SourceFile& file;
     std::ifstream f; // TODO: use a direct buffer here.
 
@@ -43,15 +41,15 @@ struct Parser {
 
     Parser(SourceFile& file) : file(file), f(file.source_path) {}
 
-    Return parse(Context const& context) {
+    ErrorCode parse(Context const& context) {
         if (!f.is_open())
-            return OPEN_FAILED;
+            return ErrorCode::OPEN_FAILED;
         enum { INCLUDE, IMPORT, MODULE } read_mode;
         char end_quote;
         c = read_char();
 
         empty_space: switch (c) { // anything after a newline.
-            case EOF: return OK;
+            case EOF: return ErrorCode::OK;
             case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             case '#': if (parse_word("include"sv)) { read_mode = INCLUDE; goto read_start; } else goto token;
@@ -61,14 +59,14 @@ struct Parser {
         }
 
         token: switch (c) {  // Wait until we hit a newline or a ;
-            case EOF: return OK;
+            case EOF: return ErrorCode::OK;
             case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\r': case '\n': c = read_char(); goto empty_space;
             default: c = read_char(); goto token;
         }
 
         read_start: switch (c) {
-            case EOF: return UNEXPECTED_END;
+            case EOF: return ErrorCode::UNEXPECTED_END;
             case '/': parse_comment(); [[fallthrough]];
             case ' ': case '\t': case '\n': case '\r': c = read_char(); goto read_start; // skip whitespace
             case ';': c = read_char(); goto empty_space;
@@ -82,17 +80,17 @@ struct Parser {
                 }
         }
         read_characters: switch (c = read_char()) {
-            case EOF: return UNEXPECTED_END;
+            case EOF: return ErrorCode::UNEXPECTED_END;
             case '/': parse_comment(); [[fallthrough]];
             case ';': case ' ': case '\t': case '\n': case '\r': goto write_characters;
             default:
-                if (!path_add_char(c)) return PATH_TOO_LONG;
+                if (!path_add_char(c)) return ErrorCode::BUFFER_TOO_SMALL;
                 goto read_characters;
         }
         read_characters_quoted: switch (c = read_char()) {
-            case EOF: return UNEXPECTED_END;
+            case EOF: return ErrorCode::UNEXPECTED_END;
             default:
-                if (!path_add_char(c)) return PATH_TOO_LONG;
+                if (!path_add_char(c)) return ErrorCode::BUFFER_TOO_SMALL;
                 if (c == end_quote) goto write_characters;
                 goto read_characters_quoted;
         }
@@ -194,7 +192,7 @@ struct Parser {
 
 
 SourceFile::SourceFile(Context const& context, const fs::path& path, type_t type)
-    : type(type), source_path(type != SYSTEM_HEADER ? normalise_path(context, path) : path) {
+    : type(type), source_path(type != SYSTEM_HEADER && type != SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
 }
 
 /*static*/ std::optional<SourceFile::type_t> SourceFile::get_type( const std::string_view& path ) {
@@ -214,7 +212,7 @@ SourceFile::SourceFile(Context const& context, const fs::path& path, type_t type
 }
 
 void SourceFile::set_compile_path(Context const& context) {
-    if (type == SYSTEM_HEADER)
+    if (type == SYSTEM_HEADER || type == SYSTEM_HEADER_UNIT)
         compiled_path = context.output_directory / "system" / source_path;
     else {
         const char* path = source_path.c_str();
@@ -240,25 +238,35 @@ void SourceFile::set_compile_path(Context const& context) {
         }
 }
 
-void SourceFile::read_dependencies(Context const& context) {
+ErrorCode SourceFile::read_dependencies(Context const& context) {
+    std::error_code err;
+
     if (compiled_path.empty())
         set_compile_path(context);
 
-    std::error_code err;
+    // Get the compiled time.
+    compiled_time.reset();
+    auto compiled_write_time = fs::last_write_time(compiled_path, err);
+    if (!err)
+        compiled_time = compiled_write_time;
+    else
+        fs::create_directories(compiled_path.parent_path(), err);
+
     fs::file_time_type source_write_time;
-    if (type == SYSTEM_HEADER) {
+    if (type == SYSTEM_HEADER || type == SYSTEM_HEADER_UNIT) {
         // Check the system header write time by going through all the options.
         for (const std::string_view& dir : context.build_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
-                goto found_file;
+                return ErrorCode::OK;
         }
         for (const fs::path& dir : context.system_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
-                goto found_file;
+                return ErrorCode::OK;
         }
-        found_file: ;
+        // Not finding system headers is okay, they might be hidden behind a preprocessor.
+        return ErrorCode::OK;
     }
     else {
         source_time.reset();
@@ -266,28 +274,29 @@ void SourceFile::read_dependencies(Context const& context) {
 
         // Get the dependencies of anything but the system headers.
         Parser parser(*this);
-        switch (err ? Parser::OPEN_FAILED : parser.parse(context)) {
-            case Parser::OK:
+        ErrorCode ret = err ? ErrorCode::OPEN_FAILED : parser.parse(context);
+        switch (ret) {
+            case ErrorCode::OK:
                 source_time = source_write_time;
                 break;
-            case Parser::OPEN_FAILED:
-                context.log.error("failed to open file ", source_path);
+            case ErrorCode::OPEN_FAILED:
+                // Not finding headers is okay, they might be hidden behind a preprocessor.
+                if (type == HEADER || type == HEADER_UNIT)
+                    ret = ErrorCode::OK;
+                else
+                    context.log.error("failed to open file ", source_path);
                 break;
-            case Parser::UNEXPECTED_END:
-                context.log.error("parsing error in ", source_path);
-                break;
-            case Parser::PATH_TOO_LONG:
+            case ErrorCode::BUFFER_TOO_SMALL:
                 context.log.error("a path or name in ", source_path, " is larger than 4096 characters");
                 break;
+            default:
+                context.log.error("parsing error in ", source_path);
+                break;
         }
+        if (type == HEADER || type == HEADER_UNIT)
+            return ErrorCode::OK;
+        return ret;
     }
-
-    compiled_time.reset();
-    auto compiled_write_time = fs::last_write_time(compiled_path, err);
-    if (!err)
-        compiled_time = compiled_write_time;
-    else
-        fs::create_directories(compiled_path.parent_path(), err);
 }
 
 
@@ -304,7 +313,10 @@ bool SourceFile::has_source_changed() {
     }
 }
 bool SourceFile::compile_to_timestamp() const {
-    return compiled_path.string().ends_with(".timestamp");
+    switch (type) {
+        case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: return true;
+        default: return false;
+    }
 };
 
 std::string SourceFile::get_build_command(Context const& context, const fs::path& output_path, bool live_compile) const {
@@ -328,9 +340,9 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
 
     if (type == PCH)
         command << "-xc++-header -c ";
-    else if (type == HEADER)
+    else if (type == HEADER_UNIT)
         command << "-fmodule-header=user -xc++-header "; // compile all headers as c++
-    else if (type == SYSTEM_HEADER)
+    else if (type == SYSTEM_HEADER_UNIT)
         command << "-fmodule-header=system -xc++-header ";
     else if (!live_compile) {
         if (type == MODULE) command << "--precompile ";

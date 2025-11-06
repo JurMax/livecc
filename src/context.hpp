@@ -7,31 +7,17 @@
 #include <string>
 #include <vector>
 
+#include "base.hpp"
+
 namespace fs = std::filesystem;
 
 struct link_map;
 typedef struct plthook plthook_t;
 
-enum build_type_t {
+enum class BuildType {
     LIVE,         // Build and run as a live application.
     SHARED,       // Build as an optimized shared library.
     STANDALONE,   // Build as a standalone executable.
-};
-
-struct Range {
-    struct Iterator {
-        uint i;
-        constexpr inline Iterator& operator++() { ++i; return *this; }
-        constexpr inline bool operator!=( Iterator& o ) { return i != o.i; }
-        constexpr inline uint operator*() { return i; }
-    };
-    constexpr inline Range( uint size ) : size(size) {}
-    template<typename T> requires requires (T t) { (uint)t.size(); }
-    constexpr inline Range( T iterable ) : size((uint)iterable.size()) {}
-
-    constexpr inline Iterator begin() { return {0}; }
-    constexpr inline Iterator end() { return {size}; }
-    uint size;
 };
 
 struct Context {
@@ -43,7 +29,7 @@ struct Context {
     enum { CLANG, GCC } compiler_type = CLANG;
 
     // Command line arguments.
-    build_type_t build_type = LIVE;
+    BuildType build_type = BuildType::LIVE;
     bool include_source_parent_dir = true;
     bool use_header_units = true;
     bool rebuild_with_O0 = false;

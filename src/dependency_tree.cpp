@@ -14,14 +14,17 @@ struct DependencyTreeBuilder {
     std::shared_mutex files_mutex;
     std::mutex children_mutex;
 
-    bool map_file_dependencies(uint file) {
+    ErrorCode map_file_dependencies(uint file) {
         files_mutex.lock_shared();
-        files[file].read_dependencies(context);
-        bool added_pch = false;
+        if (files[file].read_dependencies(context) != ErrorCode::OK) {
+            files_mutex.unlock_shared();
+            return ErrorCode::FAILED;
+        }
 
         // Mark the PCH as having zero dependencies, as it needs to be compiled first.
         if (files[file].type == SourceFile::PCH)
             files[file].parents.clear();
+        bool added_pch = false;
 
         // Get pointers to the dependencies so the list remains valid even if the files list moves.
         SourceFile::Dependency* dependency = &files[file].parents[0u];
@@ -49,7 +52,7 @@ struct DependencyTreeBuilder {
                     files_mutex.unlock();
 
                     context.log.increase_task_total();
-                    pool.enqueue([this, header] -> bool {
+                    pool.enqueue([this, header] -> ErrorCode {
                         return map_file_dependencies(header);
                     });
 
@@ -83,16 +86,15 @@ struct DependencyTreeBuilder {
 
         context.log.step_task();
         files_mutex.unlock_shared();
-        return false;
+        return ErrorCode::OK;
     }
 };
 
 // Returns true on success.
-bool DependencyTree::build(Context const& context, std::vector<SourceFile>& files) {
+ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>& files) {
     DependencyTreeBuilder builder{context, files, *this, context.job_count};
 
     context.log.set_task("LOADING DEPENDENCIES", files.size());
-    bool success = true;
 
     // Initialise the maps.
     for (uint file : Range(files)) {
@@ -103,40 +105,29 @@ bool DependencyTree::build(Context const& context, std::vector<SourceFile>& file
             else {
                 context.log.error("there are multiple implementations for module ", files[file].module_name,
                     "(in ", files[it->second].source_path, " and ", files[file].source_path, ")");
-                success = false;
+                builder.pool.got_error = true;
             }
         }
         else if (files[file].is_include())
             source_map.emplace(files[file].source_path, file);
 
-        // Make all files depend on the PCH
+        // Make all files depend on the PCH // TODO: dont do this here so that we may support multiple pchs.
         if (files[file].type == SourceFile::PCH)
             for (SourceFile& other : files)
-                if (other.type == SourceFile::UNIT || other.type == SourceFile::MODULE || other.type == SourceFile::HEADER)
+                if (!other.compile_to_timestamp())
                     other.parents.emplace_back(files[file].source_path, SourceFile::PCH);
     }
 
     // Read all the files. Store the size to avoid mapping a
     // header that was added later twice.
     for (uint i : Range(files))
-        builder.pool.enqueue([&builder, i] {
+        builder.pool.enqueue([&builder, i] -> ErrorCode {
             return builder.map_file_dependencies(i);
         });
     builder.pool.join();
     context.log.clear_task();
 
-
-    // for (auto& file : files) {
-    //     bool has_changed = !file.source_time || !file.compiled_time
-    //         || *file.source_time > *file.compiled_time;
-    //     std::cout << file.source_path << " " << file.type << " " << has_changed << " " << !file.source_time << " " << !file.compiled_time << std::endl;
-
-    //     for (auto& parent : file.parents) {
-    //         std::cout << "   " << parent.path << " " << parent.type << std::endl;
-    //     }
-    // }
-
-    return success;
+    return builder.pool.got_error ? ErrorCode::FAILED : ErrorCode::OK;
 }
 
 
