@@ -68,83 +68,6 @@ static bool depends_on_print(std::span<SourceFile> files, uint file, uint depend
     return false;
 }
 
-
-// Returns true if an error occurred. // TODO: move to compiler.cpp
-ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
-    // If the output is only a timestamp, just update it.
-    if (file.compile_to_timestamp()) {
-        file.compiled_time = file.source_time;
-        std::ofstream stream(output_path);
-        return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
-    }
-
-    std::string build_command = file.get_build_command(context, output_path, live_compile);
-    std::optional<ModuleMapperPipe> module_pipe;
-    std::error_code ec;
-
-    // Create PCH file.
-    if (file.type == SourceFile::PCH) {
-        if (context.compiler_type == Context::GCC)
-            fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
-        else
-            std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
-    }
-    else if (context.compiler_type == Context::GCC) {
-        module_pipe.emplace(context, file);
-        build_command += module_pipe->mapper_arg();
-    }
-
-    if (context.verbose)
-        context.log.info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
-    else
-        context.log.info("Compiling ", file.source_path, " to ", output_path);
-
-    build_command += " 2>&1";
-
-    // Run the command and capture its output.
-    FILE* process = popen(build_command.c_str(), "r");
-    std::vector<char> output;
-    {
-        char buff[256];
-        size_t chars_read;
-        do  {
-            chars_read = fread(buff, 1, sizeof(buff), process);
-            output.append_range(std::string_view{buff, chars_read});
-        } while (chars_read == sizeof(buff));
-    }
-
-    // Check if the process was successful.
-    int err = pclose(process);
-    if (!output.empty())
-        switch (file.type) {
-            // Don't output system header warnings.
-            case SourceFile::SYSTEM_HEADER: case SourceFile::SYSTEM_HEADER_UNIT:
-                if (err == 0) break;
-                [[fallthrough]];
-            default:
-                context.log.info(/*"\e[1m", file.source_path.native(), ":\e[0m\n",*/ std::string_view{output}); // TODO: expand long lines with indentation.
-                break;
-        }
-
-    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
-        exit(1); // TODO: this is ugly, we have to shut down gracefully.
-
-    if (err != 0) {
-        fs::remove(output_path, ec);
-        file.compiled_time = file.source_time;
-        return ErrorCode::FAILED;
-    }
-    else {
-        file.compiled_time = fs::last_write_time(file.source_path, ec);
-        return ErrorCode::OK;
-    }
-}
-
-ErrorCode compile_file(Context const& context, SourceFile& file) {
-    return compile_file(context, file, file.compiled_path, false);
-}
-
-
 ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
         return f.need_compile && !f.compile_to_timestamp();
@@ -165,7 +88,7 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
 
         compiler.pool.join();
         context.log.clear_task();
-}
+    }
 
     // Check for errors.
     {
@@ -220,4 +143,79 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     }
 
     return ErrorCode::OK;
+}
+
+
+ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
+    // If the output is only a timestamp, just update it.
+    if (file.compile_to_timestamp()) {
+        file.compiled_time = file.source_time;
+        std::ofstream stream(output_path);
+        return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
+    }
+
+    std::string build_command = file.get_build_command(context, output_path, live_compile);
+    std::optional<ModuleMapperPipe> module_pipe;
+    std::error_code ec;
+
+    // Create PCH file.
+    if (file.type == SourceFile::PCH) {
+        if (context.compiler_type == Context::GCC)
+            fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
+        else
+            std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
+    }
+    else if (context.compiler_type == Context::GCC) {
+        module_pipe.emplace(context, file);
+        build_command += module_pipe->mapper_arg();
+    }
+
+    if (context.verbose)
+        context.log.info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
+    else
+        context.log.info("Compiling ", file.source_path, " to ", output_path);
+
+    build_command += " 2>&1";
+
+    // Run the command and capture its output.
+    FILE* process = popen(build_command.c_str(), "r");
+    std::vector<char> output;
+    {
+        char buff[256];
+        size_t chars_read;
+        do {
+            chars_read = fread(buff, 1, sizeof(buff), process);
+            output.append_range(std::string_view{buff, chars_read});
+        } while (chars_read == sizeof(buff));
+    }
+
+    // Check if the process was successful.
+    int err = pclose(process);
+    if (!output.empty())
+        switch (file.type) {
+            // Don't output system header warnings.
+            case SourceFile::SYSTEM_HEADER: case SourceFile::SYSTEM_HEADER_UNIT:
+                if (err == 0) break;
+                [[fallthrough]];
+            default:
+                context.log.info(/*"\e[1m", file.source_path.native(), ":\e[0m\n",*/ std::string_view{output}); // TODO: expand long lines with indentation.
+                break;
+        }
+
+    if (WIFSIGNALED(err) && (WTERMSIG(err) == SIGINT || WTERMSIG(err) == SIGQUIT))
+        exit(1); // TODO: this is ugly, we have to shut down gracefully.
+
+    if (err != 0) {
+        fs::remove(output_path, ec);
+        file.compiled_time = file.source_time;
+        return ErrorCode::FAILED;
+    }
+    else {
+        file.compiled_time = fs::last_write_time(file.source_path, ec);
+        return ErrorCode::OK;
+    }
+}
+
+ErrorCode compile_file(Context const& context, SourceFile& file) {
+    return compile_file(context, file, file.compiled_path, false);
 }

@@ -40,21 +40,30 @@ struct DependencyTreeBuilder {
                     continue;
                 }
                 else {
+                    // Get the write lock.
                     files_mutex.unlock_shared();
                     files_mutex.lock();
-                    {
+
+                    // Now that we have the write lock, check if some other file
+                    // has not written the same header file in the meantime.
+                    auto header_result = tree.source_map.find(dependency->path);
+                    if (header_result != tree.source_map.end()) {
+                        header = header_result->second;
+                        files_mutex.unlock();
+                    }
+                    else {
                         // Insert the header as a new source file.
                         header = files.size();
                         files.emplace_back(context, dependency->path, dependency->type);
                         files[header].set_compile_path(context);
                         tree.source_map.emplace(dependency->path, header);
-                    }
-                    files_mutex.unlock();
+                        files_mutex.unlock();
 
-                    context.log.increase_task_total();
-                    pool.enqueue([this, header] -> ErrorCode {
-                        return map_file_dependencies(header);
-                    });
+                        context.log.increase_task_total();
+                        pool.enqueue([this, header] -> ErrorCode {
+                            return map_file_dependencies(header);
+                        });
+                    }
 
                     files_mutex.lock_shared();
                 }
@@ -126,6 +135,16 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
         });
     builder.pool.join();
     context.log.clear_task();
+
+    // for (auto& file : files) {
+    //     bool has_changed = !file.source_time || !file.compiled_time
+    //         || *file.source_time > *file.compiled_time;
+    //     std::cout << file.source_path << " " << file.type << " " << has_changed << " " << !file.source_time << " " << !file.compiled_time << std::endl;
+
+    //     for (auto& parent : file.parents) {
+    //         std::cout << "   " << parent.path << " " << parent.type << std::endl;
+    //     }
+    // }
 
     return builder.pool.got_error ? ErrorCode::FAILED : ErrorCode::OK;
 }

@@ -9,7 +9,7 @@ namespace fs = std::filesystem;
 
 class SourceFile {
 public:
-    enum type_t {
+    enum Type {
         UNIT,               // A C++ source file/translation unit
         C_UNIT,             // A C source file/translation unit TODO
         MODULE,             // A C++ module, gets compiled twice.
@@ -21,7 +21,7 @@ public:
         BARE_INCLUDE,       // Not compiled, only included
     };
 
-    type_t type;
+    Type type;
 
     fs::path source_path; // always relative to the working directory.
     fs::path compiled_path;
@@ -39,7 +39,7 @@ public:
 
     struct Dependency {
         fs::path path;
-        type_t type;
+        Type type;
     };
 
     // The headers and modules this file depends on.
@@ -53,10 +53,7 @@ public:
     std::vector<uint> children;
 
 public:
-    SourceFile(Context const& context, fs::path const& path, type_t type);
-
-    // Get a source type based on a file extension.
-    static std::optional<type_t> get_type(std::string_view const& path);
+    SourceFile(Context const& context, fs::path const& path, Type type);
 
     inline bool is_include() const {
         switch (type) { case UNIT: case C_UNIT: case MODULE: return false; default: return true; }
@@ -77,5 +74,9 @@ public:
         return get_build_command(context, compiled_path, false);
     }
 
+    // remove ".gch"
     std::string_view pch_include();
+
+    // Get a source type based on a file extension.
+    static std::optional<Type> get_type(std::string_view const& path);
 };

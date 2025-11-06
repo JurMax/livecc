@@ -173,7 +173,7 @@ struct Parser {
     bool try_add_include(Context const& context, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
-            SourceFile::type_t type = SourceFile::get_type(path.native()).value_or(SourceFile::BARE_INCLUDE);
+            SourceFile::Type type = SourceFile::get_type(path.native()).value_or(SourceFile::BARE_INCLUDE);
             switch (type) {
                 case SourceFile::HEADER:
                     if (context.use_header_units)
@@ -191,24 +191,8 @@ struct Parser {
 };
 
 
-SourceFile::SourceFile(Context const& context, const fs::path& path, type_t type)
+SourceFile::SourceFile(Context const& context, const fs::path& path, Type type)
     : type(type), source_path(type != SYSTEM_HEADER && type != SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
-}
-
-/*static*/ std::optional<SourceFile::type_t> SourceFile::get_type( const std::string_view& path ) {
-    size_t i = path.find_last_of('.');
-    if (i != std::string_view::npos) {
-        std::string_view ext = path.substr(i + 1);
-        if (ext == "c") return {C_UNIT};
-        if (ext == "cppm") return {MODULE};
-        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
-        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
-        for (size_t i = 0; i < 8; ++i) {
-            if (ext == unit_ext[i]) return {UNIT};
-            if (ext == head_ext[i]) return {HEADER};
-        }
-    }
-    return {};
 }
 
 void SourceFile::set_compile_path(Context const& context) {
@@ -235,7 +219,7 @@ void SourceFile::set_compile_path(Context const& context) {
             compiled_path += ".pcm"; break;
         case PCH:
             compiled_path += ".gch"; break;
-        }
+    }
 }
 
 ErrorCode SourceFile::read_dependencies(Context const& context) {
@@ -368,6 +352,21 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
 }
 
 std::string_view SourceFile::pch_include() {
-     // remove ".gch"
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
+}
+
+/*static*/ std::optional<SourceFile::Type> SourceFile::get_type( const std::string_view& path ) {
+    size_t i = path.find_last_of('.');
+    if (i != std::string_view::npos) {
+        std::string_view ext = path.substr(i + 1);
+        if (ext == "c") return {C_UNIT};
+        if (ext == "cppm") return {MODULE};
+        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
+        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
+        for (size_t i = 0; i < 8; ++i) {
+            if (ext == unit_ext[i]) return {UNIT};
+            if (ext == head_ext[i]) return {HEADER};
+        }
+    }
+    return {};
 }
