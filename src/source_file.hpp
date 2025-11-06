@@ -69,7 +69,7 @@ public:
     /** Check if the file has changed since compilation. */
     bool has_source_changed();
 
-    std::string get_build_command(Context const& context, const fs::path& output_path, bool live_compile) const;
+    std::string get_build_command(Context const& context, fs::path const& output_path, bool live_compile) const;
     inline std::string get_build_command(Context const& context) const {
         return get_build_command(context, compiled_path, false);
     }

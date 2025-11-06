@@ -355,7 +355,7 @@ std::string_view SourceFile::pch_include() {
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
 }
 
-/*static*/ std::optional<SourceFile::Type> SourceFile::get_type( const std::string_view& path ) {
+/*static*/ std::optional<SourceFile::Type> SourceFile::get_type(std::string_view const& path) {
     size_t i = path.find_last_of('.');
     if (i != std::string_view::npos) {
         std::string_view ext = path.substr(i + 1);

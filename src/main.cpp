@@ -63,7 +63,7 @@ struct Main {
     size_t path_index = 0;
 
     // Returns true if all the arguments are valid.
-    bool parse_arguments(int argn, char** argv) {
+    ErrorCode parse_arguments(int argn, char** argv) {
         std::error_code err;
         context.working_directory = fs::current_path();
         context.output_file = "build/a.out";
@@ -120,8 +120,8 @@ struct Main {
                 else if (arg == "--no-rebuild-with-O0") context.rebuild_with_O0 = false;
                 else if (arg == "--verbose") context.verbose = true;
                 else if (arg == "--test") context.test = true;
-                else if (arg == "--no-header-units") context.use_header_units = false;
                 else if (arg == "--header-units") context.use_header_units = true;
+                else if (arg == "--no-header-units") context.use_header_units = false;
                 else if (arg.starts_with("-std=c++")) context.cpp_version = arg;
                 else if (arg.starts_with("-std=c")) context.c_version = arg;
                 else if (arg.starts_with("-fuse-ld=")) {
@@ -142,7 +142,7 @@ struct Main {
                 if (next_arg_type == INPUT) {
                     if (auto type = SourceFile::get_type(arg))
                         files.emplace_back(context, arg, *type);
-                    else if (!add_source_directory(arg))
+                    else if (add_source_directory(arg) != ErrorCode::OK)
                         context.log.error("unknown input supplied: ", arg);
                 }
                 else if (next_arg_type == PCH)
@@ -190,45 +190,60 @@ struct Main {
                 build_command << "-DLCC_TEST ";
         }
 
+        // Turn all explicitly passed headers into header units.
+        if (context.use_header_units)
+            for (SourceFile& file : files)
+                if (file.type == SourceFile::HEADER)
+                    file.type = SourceFile::HEADER_UNIT;
+
         context.build_command = build_command.str();
         context.link_arguments = link_arguments.str();
-        return true;
+        return ErrorCode::OK;
     }
 
     /**
      * Add all the source files in a given directory to the build system.
      * Returns true if the given path was actually a directory.
      */
-    bool add_source_directory( const std::string_view& dir_path ) {
+    ErrorCode add_source_directory( const std::string_view& dir_path ) {
         std::error_code err;
         for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
             if (auto type = SourceFile::get_type(dir_entry.path().native()))
                 files.emplace_back(context, dir_entry.path(), *type);
-        return !err;
+        return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
 
     /**
      * Invoke the compiler and read the previous configuration.
      */
-    bool initialise() {
-        if (!get_system_include_dirs()) {
-            context.log.error("couldn't find ", context.compiler, ". is it in the path?");
-            return false;
+    ErrorCode initialise() {
+        if (get_system_include_dirs() != ErrorCode::OK)
+            return ErrorCode::FAILED;
+
+        bool build_command_changed = have_build_args_changed();
+        update_compile_commands(build_command_changed);
+
+        // Delete all the compiled files so they have to be recompiled.
+        if (build_command_changed) {
+            std::error_code err;
+            for (SourceFile& file : files)
+                if (!file.compile_to_timestamp())
+                    fs::remove(file.compiled_path, err);
         }
-        context.build_command_changed = have_build_args_changed();
-        update_compile_commands(context.build_command_changed);
-        return true;
+        return ErrorCode::OK;
     }
 
 
-    bool get_system_include_dirs() {
+    ErrorCode get_system_include_dirs() {
         // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
         char buf[4096];
         std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.compiler);
         FILE* pipe = popen(command.c_str(), "r");
         FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
-        if (pipe == nullptr)
-            return false;
+        if (pipe == nullptr) {
+            context.log.error("couldn't find ", context.compiler, ". is it in the path?");
+            return ErrorCode::OPEN_FAILED;
+        }
         while (fgets(buf, sizeof(buf), pipe) != nullptr) {
             if (buf[0] == ' ' && buf[1] == '/') {
                 size_t len = 2;
@@ -241,7 +256,12 @@ struct Main {
         // Check if mold exists, and use it as the default linker if it does.
         if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
             context.link_arguments += "-fuse-ld=mold ";
-        return pclose(pipe) == 0;
+        int err = pclose(pipe);
+        if (err != 0) {
+            context.log.error("compiler returned with error code ", err);
+            return ErrorCode::FAILED;
+        }
+        else return ErrorCode::OK;
     }
 
     bool have_build_args_changed() {
@@ -528,10 +548,11 @@ static Main* main_ptr;
 int main(int argn, char** argv) {
     Main main;
     main_ptr = &main;
-    if (!main.parse_arguments(argn, argv)) {
+    ErrorCode err = main.parse_arguments(argn, argv);
+    if (err != ErrorCode::OK) {
         main.context.log.error("failed parsing some arguments");
         // TODO: show help.
-        return 1;
+        return (int)err;
     }
 
     if (main.files.empty()) {
@@ -543,17 +564,18 @@ int main(int argn, char** argv) {
         }
     }
 
-    if (!main.initialise()) {
-        return 1;
-    }
+    err = main.initialise();
+    if (err != ErrorCode::OK)
+        return (int)err;
 
-    if (main.compile_and_link() == ErrorCode::OK) {
-        if (main.context.test)
-            main.run_tests();
-        else if (main.context.build_type == BuildType::LIVE)
-            main.start([] () { main_ptr->update(); });
-    }
+    err = main.compile_and_link();
+    if (err != ErrorCode::OK)
+        return (int)err;
 
+    if (main.context.test)
+        main.run_tests();
+    else if (main.context.build_type == BuildType::LIVE)
+        main.start([] () { main_ptr->update(); });
     return 0;
 }
 

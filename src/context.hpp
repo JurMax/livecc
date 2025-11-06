@@ -36,7 +36,6 @@ struct Context {
     bool verbose = false;
     bool test = false; // make this a build type that just uses the same files.
 
-    bool build_command_changed = false; // Has the build command changed since last invoke.
     std::string build_command;
     std::vector<std::string_view> build_include_dirs;
     std::vector<fs::path> system_include_dirs;
