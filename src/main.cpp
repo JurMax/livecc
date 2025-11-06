@@ -15,6 +15,7 @@
 #include "compile.hpp"
 #include "thread_pool.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstring>
 #include <elf.h>
@@ -213,59 +214,9 @@ struct Main {
         return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
 
-    /**
-     * Invoke the compiler and read the previous configuration.
-     */
-    ErrorCode initialise() {
-        if (get_system_include_dirs() != ErrorCode::OK)
-            return ErrorCode::FAILED;
-
-        bool build_command_changed = have_build_args_changed();
-        update_compile_commands(build_command_changed);
-
-        // Delete all the compiled files so they have to be recompiled.
-        if (build_command_changed) {
-            std::error_code err;
-            for (SourceFile& file : files)
-                if (!file.compile_to_timestamp())
-                    fs::remove(file.compiled_path, err);
-        }
-        return ErrorCode::OK;
-    }
-
-
-    ErrorCode get_system_include_dirs() {
-        // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
-        char buf[4096];
-        std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.compiler);
-        FILE* pipe = popen(command.c_str(), "r");
-        FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
-        if (pipe == nullptr) {
-            context.log.error("couldn't find ", context.compiler, ". is it in the path?");
-            return ErrorCode::OPEN_FAILED;
-        }
-        while (fgets(buf, sizeof(buf), pipe) != nullptr) {
-            if (buf[0] == ' ' && buf[1] == '/') {
-                size_t len = 2;
-                while (buf[len] != '\n' && buf[len] != '\0') ++len;
-                buf[len] = '\0';
-                context.system_include_dirs.push_back(buf + 1);
-            }
-        }
-
-        // Check if mold exists, and use it as the default linker if it does.
-        if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
-            context.link_arguments += "-fuse-ld=mold ";
-        int err = pclose(pipe);
-        if (err != 0) {
-            context.log.error("compiler returned with error code ", err);
-            return ErrorCode::FAILED;
-        }
-        else return ErrorCode::OK;
-    }
-
+private:
     bool have_build_args_changed() {
-        // TODO: check if the compiler or livecc version updated by checking
+        // TODO: check if the compiler  version updated by checking
         // if their file changes is higher than command.txt
 
         std::vector<char> build_command;
@@ -306,16 +257,62 @@ struct Main {
         return true;
     }
 
-    void update_compile_commands(bool need_update = true) {
-        // TODO: maybe do this after compilation. Then you dont need to update
-        // compile_path separately, and you also have the modules present.
+public:
+    ErrorCode get_system_include_dirs() {
+        // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
+        char buf[4096];
+        std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.compiler);
+        FILE* pipe = popen(command.c_str(), "r");
+        FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
+        if (pipe == nullptr) {
+            context.log.error("couldn't find ", context.compiler, ". is it in the path?");
+            return ErrorCode::OPEN_FAILED;
+        }
+        while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+            if (buf[0] == ' ' && buf[1] == '/') {
+                size_t len = 2;
+                while (buf[len] != '\n' && buf[len] != '\0') ++len;
+                buf[len] = '\0';
+                context.system_include_dirs.push_back(buf + 1);
+            }
+        }
+
+        // Check if mold exists, and use it as the default linker if it does.
+        if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
+            context.link_arguments += "-fuse-ld=mold ";
+        int err = pclose(pipe);
+        if (err != 0) {
+            context.log.error("compiler returned with error code ", err);
+            return ErrorCode::FAILED;
+        }
+        else return ErrorCode::OK;
+    }
+
+    ErrorCode build_dependency_tree() {
+        // Read to files to get all the dependencies.
+        return dependency_tree.build(context, files);
+    }
+
+    ErrorCode update_compile_commands() {
+        // If the build args changed, delete all the compiled files so they have to be recompiled.
+        if (have_build_args_changed()) {
+            std::error_code err;
+            for (SourceFile& file : files)
+                if (!file.compile_to_timestamp())
+                    fs::remove(file.compiled_path, err);
+        }
 
         // If a file was not compiled before, we need to recreate the compile_commands.json
-        for (auto it = files.begin(), end = files.end(); it != end && !need_update; ++it)
-            if (!it->is_include() && !it->compiled_time)
-                need_update = true;
+        bool create_compile_commands = false;
+        for (SourceFile& file : files)
+            if (!file.compiled_time && !file.is_include()) {
+                create_compile_commands = true;
+                break;
+            }
 
-        if (need_update) {
+        if (create_compile_commands) {
+            // TODO: maybe do this after compilation. Then you dont need to update
+            // compile_path separately, and you also have the modules present.
             std::ofstream compile_commands("compile_commands.json");
             std::string dir_string = "\t\t\"directory\": \"" + context.working_directory.native() + "\",\n";
             compile_commands << "[\n";
@@ -344,13 +341,11 @@ struct Main {
             }
             compile_commands << "\n]\n";
         }
+
+        return ErrorCode::OK;
     }
 
     ErrorCode compile_and_link() {
-        // Read to files to get all the dependencies.
-        if (dependency_tree.build(context, files) != ErrorCode::OK)
-            return ErrorCode::FAILED;
-
         bool do_link = !fs::exists(context.output_file);
         uint compile_count = dependency_tree.mark_for_compilation(context, files);
 
@@ -564,13 +559,10 @@ int main(int argn, char** argv) {
         }
     }
 
-    err = main.initialise();
-    if (err != ErrorCode::OK)
-        return (int)err;
-
-    err = main.compile_and_link();
-    if (err != ErrorCode::OK)
-        return (int)err;
+    err = main.get_system_include_dirs(); if (err != ErrorCode::OK) return (int)err;
+    err = main.build_dependency_tree();   if (err != ErrorCode::OK) return (int)err;
+    err = main.update_compile_commands(); if (err != ErrorCode::OK) return (int)err;
+    err = main.compile_and_link();        if (err != ErrorCode::OK) return (int)err;
 
     if (main.context.test)
         main.run_tests();
