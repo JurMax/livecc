@@ -215,7 +215,7 @@ struct Main {
     }
 
 private:
-    bool have_build_args_changed() {
+    bool have_build_args_changed() const {
         // TODO: check if the compiler  version updated by checking
         // if their file changes is higher than command.txt
 
@@ -294,14 +294,6 @@ public:
     }
 
     ErrorCode update_compile_commands() {
-        // If the build args changed, delete all the compiled files so they have to be recompiled.
-        if (have_build_args_changed()) {
-            std::error_code err;
-            for (SourceFile& file : files)
-                if (!file.compile_to_timestamp())
-                    fs::remove(file.compiled_path, err);
-        }
-
         // If a file was not compiled before, we need to recreate the compile_commands.json
         bool create_compile_commands = false;
         for (SourceFile& file : files)
@@ -309,6 +301,15 @@ public:
                 create_compile_commands = true;
                 break;
             }
+
+        // If the build args changed, delete all the compiled files so they have to be recompiled.
+        if (have_build_args_changed()) {
+            create_compile_commands = true;
+            std::error_code err;
+            for (SourceFile& file : files)
+                if (!file.compile_to_timestamp())
+                    fs::remove(file.compiled_path, err);
+        }
 
         if (create_compile_commands) {
             // TODO: maybe do this after compilation. Then you dont need to update
@@ -319,7 +320,6 @@ public:
 
             bool first = true;
             for (SourceFile& file : files) {
-                file.set_compile_path(context);
                 if (file.is_include())
                     continue;
                 if (!first) compile_commands << ",\n";

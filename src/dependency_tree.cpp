@@ -107,6 +107,8 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
 
     // Initialise the maps.
     for (uint file : Range(files)) {
+        files[file].set_compile_path(context);
+
         if (files[file].type == SourceFile::MODULE) {
             auto it = source_map.find(files[file].module_name);
             if (it == source_map.end())
