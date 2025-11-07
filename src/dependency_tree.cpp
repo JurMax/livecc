@@ -181,7 +181,7 @@ static uint check_file_for_compilation(Context const& context, std::span<SourceF
 }
 
 // Returns true if at least 1 file should be compiled.
-uint DependencyTree::mark_for_compilation(Context const& context, std::span<SourceFile> files) {
+bool DependencyTree::need_compilation(Context const& context, std::span<SourceFile> files) {
     uint compile_count = 0;
     for (SourceFile& file : files) {
         visited_flag(file) = false;
@@ -190,5 +190,5 @@ uint DependencyTree::mark_for_compilation(Context const& context, std::span<Sour
     for (uint i : Range(files))
         if (files[i].parents.size() == 0)
             compile_count += check_file_for_compilation(context, files, i);
-    return compile_count;
+    return compile_count != 0 || !fs::exists(context.output_file);
 }

@@ -277,8 +277,6 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
                 context.log.error("parsing error in ", source_path);
                 break;
         }
-        if (type == HEADER || type == HEADER_UNIT)
-            return ErrorCode::OK;
         return ret;
     }
 }

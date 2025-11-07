@@ -17,5 +17,5 @@ public:
     ErrorCode build(Context const& context, std::vector<SourceFile>& files);
 
     /** Returns true if at least 1 file should be compiled. */
-    uint mark_for_compilation(Context const& context, std::span<SourceFile> files);
+    bool need_compilation(Context const& context, std::span<SourceFile> files);
 };
