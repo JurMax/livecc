@@ -41,8 +41,8 @@ struct SourceType {
 };
 
 struct InputFile {
-    SourceType type;
     fs::path path;
+    SourceType type;
 };
 
 
@@ -70,7 +70,7 @@ public:
     };
 
     // The headers and modules this file depends on.
-    std::vector<Dependency> parents;
+    std::vector<Dependency> dependencies;
     std::vector<char> build_includes; // module includes to add to the build command.
 
     // RUNTIME:
@@ -78,12 +78,10 @@ public:
     // queue once this file is done with compiling, and they have no other
     // dependencies left.
     std::vector<uint> children;
+    std::vector<uint> parents;
 
 public:
     SourceFile(Context const& context, fs::path const& path, SourceType type);
-
-    /** Set the compile path to be inside context.output_directory */
-    void set_compile_path(Context const& context);
 
     /** Read the dependencies directly from the file. Return true on success. */
     ErrorCode read_dependencies(Context const& context);

@@ -49,7 +49,7 @@ static fs::path normalise_path(Context const& context, const fs::path& path) {
  * to extract the includes and modules in the fastest possible way.
  */
 struct Parser {
-    SourceFile& file;
+    SourceFile& file; // TODO: dont use the entire file.
     std::ifstream f; // TODO: use a direct buffer here.
 
     char buffer[4096];
@@ -115,7 +115,7 @@ struct Parser {
         write_characters:
             switch (read_mode) {
                 case INCLUDE: register_include(context); break;
-                case IMPORT: file.parents.emplace_back(std::string{buffer, buf_len}, SourceType::MODULE); break;
+                case IMPORT: file.dependencies.emplace_back(std::string{buffer, buf_len}, SourceType::MODULE); break;
                 case MODULE: file.module_name = std::string{buffer, buf_len}; break;
             }
             c = read_char();
@@ -169,7 +169,7 @@ struct Parser {
         fs::path path(std::string_view(buffer + 1, buf_len - 2));
 
         if (buffer[0] == '<') {
-            file.parents.emplace_back(path, context.use_header_units
+            file.dependencies.emplace_back(path, context.use_header_units
                     ? SourceType::SYSTEM_HEADER_UNIT : SourceType::SYSTEM_HEADER);
             return;
         }
@@ -200,7 +200,7 @@ struct Parser {
                     type = SourceType::BARE_INCLUDE;
                     break;
             }
-            file.parents.emplace_back(normalise_path(context, path), type);
+            file.dependencies.emplace_back(normalise_path(context, path), type);
             return true;
         }
         return false;
@@ -210,9 +210,7 @@ struct Parser {
 
 SourceFile::SourceFile(Context const& context, const fs::path& path, SourceType type)
     : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
-}
 
-void SourceFile::set_compile_path(Context const& context) {
     if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT)
         compiled_path = context.output_directory / "system" / source_path;
     else {
@@ -242,12 +240,9 @@ void SourceFile::set_compile_path(Context const& context) {
 ErrorCode SourceFile::read_dependencies(Context const& context) {
     std::error_code err;
 
-    if (compiled_path.empty())
-        set_compile_path(context);
-
     // Get the compiled time.
     compiled_time.reset();
-    auto full_compiled_path = context.output_directory / compiled_path;
+    auto full_compiled_path = compiled_path;
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
     if (!err)
         compiled_time = compiled_write_time;

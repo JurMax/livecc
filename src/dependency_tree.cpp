@@ -1,14 +1,17 @@
 #include "dependency_tree.hpp"
-#include "thread_pool.hpp"
+
 #include <shared_mutex>
+#include <unordered_map>
+
+#include "thread_pool.hpp"
 
 using namespace std::literals;
 
 struct DependencyTreeBuilder {
     Context const& context;
-    std::vector<SourceFile>& files;
     DependencyTree& tree;
     ThreadPool pool;
+    std::unordered_map<fs::path, uint> source_map = {};
 
     // TODO: turn this into read/write thingies.
     std::shared_mutex files_mutex;
@@ -16,27 +19,27 @@ struct DependencyTreeBuilder {
 
     ErrorCode map_file_dependencies(uint file) {
         files_mutex.lock_shared();
-        if (files[file].read_dependencies(context) != ErrorCode::OK) {
+        if (tree.files[file].read_dependencies(context) != ErrorCode::OK) {
             files_mutex.unlock_shared();
             return ErrorCode::FAILED;
         }
 
         // Mark the PCH as having zero dependencies, as it needs to be compiled first.
-        if (files[file].type == SourceType::PCH)
-            files[file].parents.clear();
+        if (tree.files[file].type == SourceType::PCH)
+            tree.files[file].dependencies.clear();
         bool added_pch = false;
 
         // Get pointers to the dependencies so the list remains valid even if the files list moves.
-        SourceFile::Dependency* dependency = &files[file].parents[0u];
-        SourceFile::Dependency* dep_end = dependency + files[file].parents.size();
+        SourceFile::Dependency* dependency = &tree.files[file].dependencies[0u];
+        SourceFile::Dependency* dep_end = dependency + tree.files[file].dependencies.size();
         for (; dependency != dep_end; ++dependency) {
             uint header;
             {
-                auto header_result = tree.source_map.find(dependency->path);
-                if (header_result != tree.source_map.end())
+                auto header_result = source_map.find(dependency->path);
+                if (header_result != source_map.end())
                     header = header_result->second;
                 else if (dependency->type == SourceType::MODULE) {
-                    context.log.error("module [", dependency->path, "] imported in ", files[file].source_path, " does not exist");
+                    context.log.error("module [", dependency->path, "] imported in ", tree.files[file].source_path, " does not exist");
                     continue;
                 }
                 else {
@@ -46,17 +49,16 @@ struct DependencyTreeBuilder {
 
                     // Now that we have the write lock, check if some other file
                     // has not written the same header file in the meantime.
-                    auto header_result = tree.source_map.find(dependency->path);
-                    if (header_result != tree.source_map.end()) {
+                    auto header_result = source_map.find(dependency->path);
+                    if (header_result != source_map.end()) {
                         header = header_result->second;
                         files_mutex.unlock();
                     }
                     else {
                         // Insert the header as a new source file.
-                        header = files.size();
-                        files.emplace_back(context, dependency->path, dependency->type);
-                        files[header].set_compile_path(context);
-                        tree.source_map.emplace(dependency->path, header);
+                        header = tree.files.size();
+                        tree.files.emplace_back(context, dependency->path, dependency->type);
+                        source_map.emplace(dependency->path, header);
                         files_mutex.unlock();
 
                         context.log.increase_task_total();
@@ -69,50 +71,51 @@ struct DependencyTreeBuilder {
                 }
             }
 
-            switch (files[header].type) {
+            switch (tree.files[header].type) {
                 case SourceType::PCH:
                     if (!added_pch) {
                         added_pch = true;
-                        files[file].build_includes.append_range("-include \""sv);
-                        files[file].build_includes.append_range(files[header].pch_include());
-                        files[file].build_includes.append_range("\" "sv);
+                        tree.files[file].build_includes.append_range("-include \""sv);
+                        tree.files[file].build_includes.append_range(tree.files[header].pch_include());
+                        tree.files[file].build_includes.append_range("\" "sv);
                     }
                     break;
                 case SourceType::HEADER_UNIT:
                 case SourceType::SYSTEM_HEADER_UNIT:
                     if (context.compiler_type == Context::CLANG) {
-                        files[file].build_includes.append_range("-fmodule-file=\""sv);
-                        files[file].build_includes.append_range(files[header].compiled_path.native());
-                        files[file].build_includes.append_range("\" "sv);
+                        tree.files[file].build_includes.append_range("-fmodule-file=\""sv);
+                        tree.files[file].build_includes.append_range(tree.files[header].compiled_path.native());
+                        tree.files[file].build_includes.append_range("\" "sv);
                     }
                 default: break;
             }
 
+            tree.files[file].parents.push_back(header);
             children_mutex.lock();
-            files[header].children.push_back(file);
+            tree.files[header].children.push_back(file);
             children_mutex.unlock();
         }
+        files_mutex.unlock_shared();
 
         context.log.step_task();
-        files_mutex.unlock_shared();
         return ErrorCode::OK;
     }
 };
 
 // Returns true on success.
-ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>& files) {
-    DependencyTreeBuilder builder{context, files, *this, context.job_count};
+ErrorCode DependencyTree::build(Context const& context, std::span<const InputFile> input) {
+    for (InputFile const& in : input)
+        files.emplace_back(context, in.path, in.type);
 
+    DependencyTreeBuilder builder{context, *this, context.job_count};
     context.log.set_task("LOADING DEPENDENCIES", files.size());
 
     // Initialise the maps.
     for (uint file : Range(files)) {
-        files[file].set_compile_path(context);
-
         if (files[file].type == SourceType::MODULE) {
-            auto it = source_map.find(files[file].module_name);
-            if (it == source_map.end())
-                source_map.emplace(files[file].module_name, file);
+            auto it = builder.source_map.find(files[file].module_name);
+            if (it == builder.source_map.end())
+                builder.source_map.emplace(files[file].module_name, file);
             else {
                 context.log.error("there are multiple implementations for module ", files[file].module_name,
                     "(in ", files[it->second].source_path, " and ", files[file].source_path, ")");
@@ -120,13 +123,13 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
             }
         }
         else if (files[file].type.is_include())
-            source_map.emplace(files[file].source_path, file);
+            builder.source_map.emplace(files[file].source_path, file);
 
         // Make all files depend on the PCH // TODO: dont do this here so that we may support multiple pchs.
         if (files[file].type == SourceType::PCH)
             for (SourceFile& other : files)
                 if (!other.type.compile_to_timestamp())
-                    other.parents.emplace_back(files[file].source_path, SourceType::PCH);
+                    other.dependencies.emplace_back(files[file].source_path, SourceType::PCH);
     }
 
     // Read all the files. Store the size to avoid mapping a
@@ -141,10 +144,10 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
     // for (auto& file : files) {
     //     bool has_changed = !file.source_time || !file.compiled_time
     //         || *file.source_time > *file.compiled_time;
-    //     std::cout << file.source_path << " " << file.type << " " << has_changed << " " << !file.source_time << " " << !file.compiled_time << std::endl;
+    //     context.log.print(file.source_path, " ", file.type, " ", has_changed, " ", !file.source_time, " ", !file.compiled_time, "\n");
 
     //     for (auto& parent : file.parents) {
-    //         std::cout << "   " << parent.path << " " << parent.type << std::endl;
+    //         context.log.print("   ", parent.path, " ", parent.type, "\n");
     //     }
     // }
 
@@ -163,7 +166,7 @@ static uint mark_file_for_compilation(std::span<SourceFile> const& files, uint f
     return compile_count;
 }
 
-static uint check_file_for_compilation(Context const& context, std::span<SourceFile> const& files, uint file) {
+static uint check_file_for_compilation(std::span<SourceFile> const& files, uint file) {
     bool has_changed = !files[file].source_time || !files[file].compiled_time
         || *files[file].source_time > *files[file].compiled_time;
     visited_flag(files[file]) = true;
@@ -175,13 +178,13 @@ static uint check_file_for_compilation(Context const& context, std::span<SourceF
         uint compile_count = 0;
         for (uint child : files[file].children)
             if (!files[child].need_compile && !visited_flag(files[child]))
-                compile_count += check_file_for_compilation(context, files, child);
+                compile_count += check_file_for_compilation(files, child);
         return compile_count;
     }
 }
 
 // Returns true if at least 1 file should be compiled.
-bool DependencyTree::need_compilation(Context const& context, std::span<SourceFile> files) {
+bool DependencyTree::need_compilation() {
     uint compile_count = 0;
     for (SourceFile& file : files) {
         visited_flag(file) = false;
@@ -189,6 +192,6 @@ bool DependencyTree::need_compilation(Context const& context, std::span<SourceFi
     }
     for (uint i : Range(files))
         if (files[i].parents.size() == 0)
-            compile_count += check_file_for_compilation(context, files, i);
-    return compile_count != 0 || !fs::exists(context.output_file);
+            compile_count += check_file_for_compilation(files, i);
+    return compile_count != 0;
 }

@@ -20,6 +20,9 @@ enum class BuildType {
     STANDALONE,   // Build as a standalone executable.
 };
 
+/**
+ * All the settings and logging.
+ */
 struct Context {
     fs::path working_directory;
     fs::path output_file;
@@ -51,6 +54,10 @@ struct Context {
 
     mutable struct Logging {
         Logging();
+
+        inline void print(const auto&... args) {
+            (std::cout << ... << args);
+        }
 
         inline void info(const auto&... args) {
             std::unique_lock<std::mutex> lock(mutex);

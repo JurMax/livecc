@@ -58,16 +58,16 @@ std::string_view get_string_table(link_map* handle) {
  * Add all the source files in a given directory to the build system.
  * Returns true if the given path was actually a directory.
  */
-ErrorCode add_source_directory(Context& context, std::vector<SourceFile>& files, const std::string_view& dir_path) {
+ErrorCode add_source_directory(std::vector<InputFile>& files, std::string_view const& dir_path) {
     std::error_code err;
     for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
         if (auto type = SourceType::from_extension(dir_entry.path().native()))
-            files.emplace_back(context, dir_entry.path(), *type);
+            files.emplace_back(dir_entry.path(), *type);
     return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
 }
 
 // Returns true if all the arguments are valid.
-ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int argn, char** argv) {
+ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int argn, char** argv) {
     std::error_code err;
     context.working_directory = fs::current_path();
     context.output_file = "build/a.out";
@@ -117,7 +117,7 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
             }
             else if (arg.starts_with("--pch")) {
                 if (arg.length() == 5) next_arg_type = PCH;
-                else files.emplace_back(context, arg, SourceType::PCH);
+                else files.emplace_back(arg, SourceType::PCH);
             }
             else if (arg == "--standalone") context.build_type = BuildType::STANDALONE;
             else if (arg == "--shared") context.build_type = BuildType::SHARED;
@@ -145,12 +145,12 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
         else {
             if (next_arg_type == INPUT) {
                 if (auto type = SourceType::from_extension(arg))
-                    files.emplace_back(context, arg, *type);
-                else if (add_source_directory(context, files, arg) != ErrorCode::OK)
+                    files.emplace_back(arg, *type);
+                else if (add_source_directory(files, arg) != ErrorCode::OK)
                     context.log.error("unknown input supplied: ", arg);
             }
             else if (next_arg_type == PCH)
-                files.emplace_back(context, arg, SourceType::PCH);
+                files.emplace_back(arg, SourceType::PCH);
             else if (next_arg_type == OUTPUT)
                 context.output_file = arg;
             else
@@ -196,7 +196,7 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
 
     // Turn all explicitly passed headers into header units.
     if (context.use_header_units)
-        for (SourceFile& file : files)
+        for (InputFile& file : files)
             if (file.type == SourceType::HEADER)
                 file.type = SourceType::HEADER_UNIT;
 
@@ -347,7 +347,7 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
     link_command << '\0';
 
     context.log.info("Linking sources together...");
-    // std::cout << link_command.str() << std::endl;
+    // context.log.info(link_command.str());
 
     if (context.verbose)
         context.log.info(link_command.view());
@@ -438,7 +438,7 @@ private:
             if (str_table[i] == '\0') {
                 const char* name = &str_table[i + 1];
                 void* func = dlsym(handle, name);
-                // std::cout << name << std::endl;
+                // context.log.info(name);
 
                 if (func != nullptr && strlen(name) > 3) {
                     bool is_cpp = name[0] == '_' && name[1] == 'Z';
@@ -447,7 +447,7 @@ private:
                         (void)error;
 
                     // if (error == 0)
-                        // std::cout << "        " << error << std::endl;
+                        // context.log.error(error);
                     }
                 }
             }
@@ -525,18 +525,18 @@ void run_tests(Context const& context) {
 
 int main(int argn, char** argv) {
     Context context;
-    std::vector<SourceFile> files;
+    std::vector<InputFile> input;
 
-    ErrorCode err = parse_arguments(context, files, argn, argv);
+    ErrorCode err = parse_arguments(context, input, argn, argv);
     if (err != ErrorCode::OK) {
         context.log.error("failed parsing some arguments");
         // TODO: show help.
         return (int)err;
     }
 
-    if (files.empty()) {
-        add_source_directory(context, files, "src");
-        if (files.empty()) {
+    if (input.empty()) {
+        add_source_directory(input, "src");
+        if (input.empty()) {
             // TODO: show help.
             context.log.info("no input files");
             return 2;
@@ -547,19 +547,19 @@ int main(int argn, char** argv) {
     if (err != ErrorCode::OK) return (int)err;
 
     DependencyTree dependency_tree;
-    err = dependency_tree.build(context, files);
+    err = dependency_tree.build(context, input);
     if (err != ErrorCode::OK) return (int)err;
 
-    if (dependency_tree.need_compilation(context, files)) {
-        update_compile_commands(context, files);
-        err = compile_and_link(context, files);
+    if (dependency_tree.need_compilation() || !fs::exists(context.output_file)) {
+        update_compile_commands(context, dependency_tree.files);
+        err = compile_and_link(context, dependency_tree.files);
         if (err != ErrorCode::OK) return (int)err;
     }
 
     if (context.test)
         run_tests(context);
     else if (context.build_type == BuildType::LIVE) {
-        Runtime runtime{context, files};
+        Runtime runtime{context, dependency_tree.files};
         runtime.run();
     }
     return 0;

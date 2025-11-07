@@ -54,14 +54,14 @@ static bool depends_on(std::span<SourceFile> files, uint file, uint dependency) 
     return false;
 }
 
-static bool depends_on_print(std::span<SourceFile> files, uint file, uint dependency) {
+static bool depends_on_print(Context::Logging& log, std::span<SourceFile> files, uint file, uint dependency) {
     for (uint child : files[dependency].children) {
         if (child == file) {
-            std::cout << files[child].source_path;
+            log.print(files[child].source_path);
             return true;
         }
-        else if (depends_on_print(files, file, child)) {
-            std::cout << " -> " << files[child].source_path;
+        else if (depends_on_print(log, files, file, child)) {
+            log.print(" -> ", files[child].source_path);
             return true;
         }
     }
@@ -107,12 +107,12 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
             context.log.error("compilation failed for:");
             for (uint i : Range(files))
                 if (info[i].failed)
-                    std::cout << "        " << files[i].source_path << std::endl;
+                    context.log.print("        ", files[i].source_path, "\n");
             if (some_missing_dependencies) {
-                std::cout << std::endl;
+                context.log.print("\n");
                 for (uint i : Range(files))
                     if (info[i].compiled_parents < files[i].parents.size())
-                        std::cout << "        " << files[i].source_path << std::endl;
+                        context.log.print("        ", files[i].source_path, "\n");
             }
             return ErrorCode::FAILED;
         }
@@ -121,7 +121,7 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
             context.log.error("files are missing one or more dependencies:");
             for (uint i : Range(files))
                 if (info[i].compiled_parents < files[i].parents.size())
-                    std::cout << "        " << files[i].source_path << std::endl;
+                    context.log.print("        ", files[i].source_path, "\n");
 
             bool circular_dependencies = false;
             for (uint i : Range(files)) {
@@ -132,9 +132,9 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
                             context.log.info();
                             context.log.error("circular dependencies found:");
                         }
-                        std::cout << "        ";
-                        depends_on_print(files, i, i);
-                        std::cout << " -> " << files[i].source_path << std::endl;
+                        context.log.print("        ");
+                        depends_on_print(context.log, files, i, i);
+                        context.log.print(" -> ", files[i].source_path, "\n");
                     }
                 }
             }
