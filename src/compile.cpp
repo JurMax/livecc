@@ -29,7 +29,7 @@ struct Compiler {
                     mark_compiled(files[file]);
                 else
                     info[file].failed = true;
-                if (!files[file].compile_to_timestamp())
+                if (!files[file].type.compile_to_timestamp())
                     context.log.step_task();
                 return err;
             });
@@ -70,7 +70,7 @@ static bool depends_on_print(std::span<SourceFile> files, uint file, uint depend
 
 ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
-        return f.need_compile && !f.compile_to_timestamp();
+        return f.need_compile && !f.type.compile_to_timestamp();
     });
     context.log.set_task("COMPILING", compile_count);
 
@@ -148,7 +148,7 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
 
 ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
     // If the output is only a timestamp, just update it.
-    if (file.compile_to_timestamp()) {
+    if (file.type.compile_to_timestamp()) {
         file.compiled_time = file.source_time;
         std::ofstream stream(output_path);
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
@@ -159,7 +159,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     std::error_code ec;
 
     // Create PCH file.
-    if (file.type == SourceFile::PCH) {
+    if (file.type == SourceType::PCH) {
         if (context.compiler_type == Context::GCC)
             fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
         else
@@ -194,7 +194,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     if (!output.empty())
         switch (file.type) {
             // Don't output system header warnings.
-            case SourceFile::SYSTEM_HEADER: case SourceFile::SYSTEM_HEADER_UNIT:
+            case SourceType::SYSTEM_HEADER: case SourceType::SYSTEM_HEADER_UNIT:
                 if (err == 0) break;
                 [[fallthrough]];
             default:

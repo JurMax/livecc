@@ -12,7 +12,7 @@
 // Class that represents a simple thread pool
 class ThreadPool {
 public:
-    // // Constructor to creates a thread pool with given
+    // Constructor to creates a thread pool with given
     // number of threads
     ThreadPool(size_t num_threads = 0) {
         if (num_threads == 0)

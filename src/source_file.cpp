@@ -12,6 +12,23 @@
 
 using namespace std::literals;
 
+/*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
+    size_t i = path.find_last_of('.');
+    if (i != std::string_view::npos) {
+        std::string_view ext = path.substr(i + 1);
+        if (ext == "c") return {C_UNIT};
+        if (ext == "cppm") return {MODULE};
+        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
+        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
+        for (size_t i = 0; i < 8; ++i) {
+            if (ext == unit_ext[i]) return {UNIT};
+            if (ext == head_ext[i]) return {HEADER};
+        }
+    }
+    return {};
+}
+
+
 // Make a path lexically normal, and possibly relative to the working directory
 static fs::path normalise_path(Context const& context, const fs::path& path) {
     std::error_code err;
@@ -98,7 +115,7 @@ struct Parser {
         write_characters:
             switch (read_mode) {
                 case INCLUDE: register_include(context); break;
-                case IMPORT: file.parents.emplace_back(std::string{buffer, buf_len}, SourceFile::MODULE); break;
+                case IMPORT: file.parents.emplace_back(std::string{buffer, buf_len}, SourceType::MODULE); break;
                 case MODULE: file.module_name = std::string{buffer, buf_len}; break;
             }
             c = read_char();
@@ -153,7 +170,7 @@ struct Parser {
 
         if (buffer[0] == '<') {
             file.parents.emplace_back(path, context.use_header_units
-                    ? SourceFile::SYSTEM_HEADER_UNIT : SourceFile::SYSTEM_HEADER);
+                    ? SourceType::SYSTEM_HEADER_UNIT : SourceType::SYSTEM_HEADER);
             return;
         }
 
@@ -173,14 +190,14 @@ struct Parser {
     bool try_add_include(Context const& context, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
-            SourceFile::Type type = SourceFile::get_type(path.native()).value_or(SourceFile::BARE_INCLUDE);
+            SourceType::Type type = SourceType::from_extension(path.native()).value_or(SourceType::BARE_INCLUDE);
             switch (type) {
-                case SourceFile::HEADER:
+                case SourceType::HEADER:
                     if (context.use_header_units)
-                        type = SourceFile::HEADER_UNIT;
+                        type = SourceType::HEADER_UNIT;
                     break;
                 default:
-                    type = SourceFile::BARE_INCLUDE;
+                    type = SourceType::BARE_INCLUDE;
                     break;
             }
             file.parents.emplace_back(normalise_path(context, path), type);
@@ -191,12 +208,12 @@ struct Parser {
 };
 
 
-SourceFile::SourceFile(Context const& context, const fs::path& path, Type type)
-    : type(type), source_path(type != SYSTEM_HEADER && type != SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
+SourceFile::SourceFile(Context const& context, const fs::path& path, SourceType type)
+    : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
 }
 
 void SourceFile::set_compile_path(Context const& context) {
-    if (type == SYSTEM_HEADER || type == SYSTEM_HEADER_UNIT)
+    if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT)
         compiled_path = context.output_directory / "system" / source_path;
     else {
         const char* path = source_path.c_str();
@@ -206,18 +223,18 @@ void SourceFile::set_compile_path(Context const& context) {
     }
 
     switch (type) {
-        case UNIT:
-        case C_UNIT:
-        case MODULE:
+        case SourceType::UNIT:
+        case SourceType::C_UNIT:
+        case SourceType::MODULE:
             compiled_path += ".o"; break;
-        case HEADER:
-        case SYSTEM_HEADER:
-        case BARE_INCLUDE:
+        case SourceType::HEADER:
+        case SourceType::SYSTEM_HEADER:
+        case SourceType::BARE_INCLUDE:
             compiled_path += ".timestamp"; break;
-        case HEADER_UNIT:
-        case SYSTEM_HEADER_UNIT:
+        case SourceType::HEADER_UNIT:
+        case SourceType::SYSTEM_HEADER_UNIT:
             compiled_path += ".pcm"; break;
-        case PCH:
+        case SourceType::PCH:
             compiled_path += ".gch"; break;
     }
 }
@@ -230,6 +247,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
 
     // Get the compiled time.
     compiled_time.reset();
+    auto full_compiled_path = context.output_directory / compiled_path;
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
     if (!err)
         compiled_time = compiled_write_time;
@@ -237,7 +255,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
         fs::create_directories(compiled_path.parent_path(), err);
 
     fs::file_time_type source_write_time;
-    if (type == SYSTEM_HEADER || type == SYSTEM_HEADER_UNIT) {
+    if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT) {
         // Check the system header write time by going through all the options.
         for (const std::string_view& dir : context.build_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
@@ -265,7 +283,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
                 break;
             case ErrorCode::OPEN_FAILED:
                 // Not finding headers is okay, they might be hidden behind a preprocessor.
-                if (type == HEADER || type == HEADER_UNIT)
+                if (type == SourceType::HEADER || type == SourceType::HEADER_UNIT)
                     ret = ErrorCode::OK;
                 else
                     context.log.error("failed to open file ", source_path);
@@ -283,7 +301,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
 
 
 bool SourceFile::has_source_changed() {
-    if (is_include())
+    if (type.is_include())
         return false;
     std::error_code err;
     fs::file_time_type new_source_time = fs::last_write_time(source_path, err);
@@ -294,22 +312,15 @@ bool SourceFile::has_source_changed() {
         return !compiled_time || new_source_time > *compiled_time;
     }
 }
-bool SourceFile::compile_to_timestamp() const {
-    switch (type) {
-        case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: return true;
-        default: return false;
-    }
-};
-
 std::string SourceFile::get_build_command(Context const& context, const fs::path& output_path, bool live_compile) const {
-    if (compile_to_timestamp())
+    if (type.compile_to_timestamp())
         return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
     command << context.build_command;
-    command << (type == C_UNIT ? context.c_version : context.cpp_version) << ' ';
+    command << (type == SourceType::C_UNIT ? context.c_version : context.cpp_version) << ' ';
 
-    if (type != PCH && context.compiler_type == Context::GCC)
+    if (type != SourceType::PCH && context.compiler_type == Context::GCC)
         command << "-fmodules ";
 
     if (context.include_source_parent_dir) {
@@ -320,14 +331,14 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
 
     command << std::string_view{build_includes.data(), build_includes.size()};
 
-    if (type == PCH)
+    if (type == SourceType::PCH)
         command << "-xc++-header -c ";
-    else if (type == HEADER_UNIT)
+    else if (type == SourceType::HEADER_UNIT)
         command << "-fmodule-header=user -xc++-header "; // compile all headers as c++
-    else if (type == SYSTEM_HEADER_UNIT)
+    else if (type == SourceType::SYSTEM_HEADER_UNIT)
         command << "-fmodule-header=system -xc++-header ";
     else if (!live_compile) {
-        if (type == MODULE) command << "--precompile ";
+        if (type == SourceType::MODULE) command << "--precompile ";
         else command << "-c ";
     }
     else {
@@ -341,7 +352,7 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
     // GCC uses the IPC for this. // TODO: check if supplying the output is fine.
     if (context.compiler_type == Context::GCC)
         switch (type) {
-            case HEADER_UNIT: case SYSTEM_HEADER_UNIT: case MODULE: return command.str();
+            case SourceType::HEADER_UNIT: case SourceType::SYSTEM_HEADER_UNIT: case SourceType::MODULE: return command.str();
             default: break;
         }
 
@@ -351,20 +362,4 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
 
 std::string_view SourceFile::pch_include() {
     return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
-}
-
-/*static*/ std::optional<SourceFile::Type> SourceFile::get_type(std::string_view const& path) {
-    size_t i = path.find_last_of('.');
-    if (i != std::string_view::npos) {
-        std::string_view ext = path.substr(i + 1);
-        if (ext == "c") return {C_UNIT};
-        if (ext == "cppm") return {MODULE};
-        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
-        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
-        for (size_t i = 0; i < 8; ++i) {
-            if (ext == unit_ext[i]) return {UNIT};
-            if (ext == head_ext[i]) return {HEADER};
-        }
-    }
-    return {};
 }

@@ -15,7 +15,6 @@
 #include "compile.hpp"
 #include "thread_pool.hpp"
 
-#include <algorithm>
 #include <charconv>
 #include <cstring>
 #include <elf.h>
@@ -62,7 +61,7 @@ std::string_view get_string_table(link_map* handle) {
 ErrorCode add_source_directory(Context& context, std::vector<SourceFile>& files, const std::string_view& dir_path) {
     std::error_code err;
     for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
-        if (auto type = SourceFile::get_type(dir_entry.path().native()))
+        if (auto type = SourceType::from_extension(dir_entry.path().native()))
             files.emplace_back(context, dir_entry.path(), *type);
     return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
 }
@@ -118,7 +117,7 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
             }
             else if (arg.starts_with("--pch")) {
                 if (arg.length() == 5) next_arg_type = PCH;
-                else files.emplace_back(context, arg, SourceFile::PCH);
+                else files.emplace_back(context, arg, SourceType::PCH);
             }
             else if (arg == "--standalone") context.build_type = BuildType::STANDALONE;
             else if (arg == "--shared") context.build_type = BuildType::SHARED;
@@ -145,13 +144,13 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
         }
         else {
             if (next_arg_type == INPUT) {
-                if (auto type = SourceFile::get_type(arg))
+                if (auto type = SourceType::from_extension(arg))
                     files.emplace_back(context, arg, *type);
                 else if (add_source_directory(context, files, arg) != ErrorCode::OK)
                     context.log.error("unknown input supplied: ", arg);
             }
             else if (next_arg_type == PCH)
-                files.emplace_back(context, arg, SourceFile::PCH);
+                files.emplace_back(context, arg, SourceType::PCH);
             else if (next_arg_type == OUTPUT)
                 context.output_file = arg;
             else
@@ -198,8 +197,8 @@ ErrorCode parse_arguments(Context& context, std::vector<SourceFile>& files, int 
     // Turn all explicitly passed headers into header units.
     if (context.use_header_units)
         for (SourceFile& file : files)
-            if (file.type == SourceFile::HEADER)
-                file.type = SourceFile::HEADER_UNIT;
+            if (file.type == SourceType::HEADER)
+                file.type = SourceType::HEADER_UNIT;
 
     context.build_command = build_command.str();
     context.link_arguments = link_arguments.str();
@@ -285,7 +284,7 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
     // If a file was not compiled before, we need to recreate the compile_commands.json
     bool create_compile_commands = false;
     for (SourceFile& file : files)
-        if (!file.compiled_time && !file.is_include()) {
+        if (!file.compiled_time && !file.type.is_include()) {
             create_compile_commands = true;
             break;
         }
@@ -295,8 +294,8 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
         create_compile_commands = true;
         std::error_code err;
         for (SourceFile& file : files)
-            if (!file.compile_to_timestamp())
-                fs::remove(file.compiled_path, err);
+            if (!file.type.compile_to_timestamp())
+                fs::remove(context.output_directory / file.compiled_path, err);
     }
 
     if (create_compile_commands) {
@@ -309,7 +308,7 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
 
         bool first = true;
         for (SourceFile& file : files) {
-            if (file.is_include())
+            if (file.type.is_include())
                 continue;
             if (!first) compile_commands << ",\n";
             else first = false;
@@ -343,7 +342,7 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
     link_command << "-Wl,-z,defs "; // Make sure that all symbols are resolved.
     link_command << "-o " << context.output_file;
     for (SourceFile& file : files)
-        if (!file.is_include())
+        if (!file.type.is_include())
             link_command << ' ' << file.compiled_path;
     link_command << '\0';
 
@@ -459,7 +458,7 @@ private:
         path_index = (path_index + 1) % files.size();
 
         SourceFile& file = files[path_index];
-        if (file.type == SourceFile::UNIT && file.has_source_changed()) {
+        if (file.type == SourceType::UNIT && file.has_source_changed()) {
             context.log.info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
 

@@ -6,9 +6,7 @@
 
 namespace fs = std::filesystem;
 
-
-class SourceFile {
-public:
+struct SourceType {
     enum Type {
         UNIT,               // A C++ source file/translation unit
         C_UNIT,             // A C source file/translation unit TODO
@@ -21,7 +19,36 @@ public:
         BARE_INCLUDE,       // Not compiled, only included
     };
 
+    SourceType(Type type) : type(type) {}
+    SourceType& operator=(Type new_type) { type = new_type; return *this; }
+    operator Type() const { return type; }
+
+    inline bool is_include() const {
+        switch (type) { case UNIT: case C_UNIT: case MODULE: return false; default: return true; }
+    }
+
+    inline bool compile_to_timestamp() const {
+        switch (type) {
+            case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: return true;
+            default: return false;
+        }
+    };
+
+    /** Get a source type based on a file extension. */
+    static std::optional<SourceType> from_extension(std::string_view const& path);
+
     Type type;
+};
+
+struct InputFile {
+    SourceType type;
+    fs::path path;
+};
+
+
+class SourceFile {
+public:
+    SourceType type;
 
     fs::path source_path; // always relative to the working directory.
     fs::path compiled_path;
@@ -39,7 +66,7 @@ public:
 
     struct Dependency {
         fs::path path;
-        Type type;
+        SourceType type;
     };
 
     // The headers and modules this file depends on.
@@ -53,12 +80,7 @@ public:
     std::vector<uint> children;
 
 public:
-    SourceFile(Context const& context, fs::path const& path, Type type);
-
-    inline bool is_include() const {
-        switch (type) { case UNIT: case C_UNIT: case MODULE: return false; default: return true; }
-    }
-    bool compile_to_timestamp() const;
+    SourceFile(Context const& context, fs::path const& path, SourceType type);
 
     /** Set the compile path to be inside context.output_directory */
     void set_compile_path(Context const& context);
@@ -76,7 +98,4 @@ public:
 
     // remove ".gch"
     std::string_view pch_include();
-
-    // Get a source type based on a file extension.
-    static std::optional<Type> get_type(std::string_view const& path);
 };

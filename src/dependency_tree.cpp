@@ -22,7 +22,7 @@ struct DependencyTreeBuilder {
         }
 
         // Mark the PCH as having zero dependencies, as it needs to be compiled first.
-        if (files[file].type == SourceFile::PCH)
+        if (files[file].type == SourceType::PCH)
             files[file].parents.clear();
         bool added_pch = false;
 
@@ -35,7 +35,7 @@ struct DependencyTreeBuilder {
                 auto header_result = tree.source_map.find(dependency->path);
                 if (header_result != tree.source_map.end())
                     header = header_result->second;
-                else if (dependency->type == SourceFile::MODULE) {
+                else if (dependency->type == SourceType::MODULE) {
                     context.log.error("module [", dependency->path, "] imported in ", files[file].source_path, " does not exist");
                     continue;
                 }
@@ -70,7 +70,7 @@ struct DependencyTreeBuilder {
             }
 
             switch (files[header].type) {
-                case SourceFile::PCH:
+                case SourceType::PCH:
                     if (!added_pch) {
                         added_pch = true;
                         files[file].build_includes.append_range("-include \""sv);
@@ -78,8 +78,8 @@ struct DependencyTreeBuilder {
                         files[file].build_includes.append_range("\" "sv);
                     }
                     break;
-                case SourceFile::HEADER_UNIT:
-                case SourceFile::SYSTEM_HEADER_UNIT:
+                case SourceType::HEADER_UNIT:
+                case SourceType::SYSTEM_HEADER_UNIT:
                     if (context.compiler_type == Context::CLANG) {
                         files[file].build_includes.append_range("-fmodule-file=\""sv);
                         files[file].build_includes.append_range(files[header].compiled_path.native());
@@ -109,7 +109,7 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
     for (uint file : Range(files)) {
         files[file].set_compile_path(context);
 
-        if (files[file].type == SourceFile::MODULE) {
+        if (files[file].type == SourceType::MODULE) {
             auto it = source_map.find(files[file].module_name);
             if (it == source_map.end())
                 source_map.emplace(files[file].module_name, file);
@@ -119,14 +119,14 @@ ErrorCode DependencyTree::build(Context const& context, std::vector<SourceFile>&
                 builder.pool.got_error = true;
             }
         }
-        else if (files[file].is_include())
+        else if (files[file].type.is_include())
             source_map.emplace(files[file].source_path, file);
 
         // Make all files depend on the PCH // TODO: dont do this here so that we may support multiple pchs.
-        if (files[file].type == SourceFile::PCH)
+        if (files[file].type == SourceType::PCH)
             for (SourceFile& other : files)
-                if (!other.compile_to_timestamp())
-                    other.parents.emplace_back(files[file].source_path, SourceFile::PCH);
+                if (!other.type.compile_to_timestamp())
+                    other.parents.emplace_back(files[file].source_path, SourceType::PCH);
     }
 
     // Read all the files. Store the size to avoid mapping a
