@@ -57,7 +57,7 @@ struct DependencyTreeBuilder {
                     else {
                         // Insert the header as a new source file.
                         header = tree.files.size();
-                        tree.files.emplace_back(context, dependency->path, dependency->type);
+                        tree.files.emplace_back(context.settings, dependency->path, dependency->type);
                         source_map.emplace(dependency->path, header);
                         files_mutex.unlock();
 
@@ -82,7 +82,7 @@ struct DependencyTreeBuilder {
                     break;
                 case SourceType::HEADER_UNIT:
                 case SourceType::SYSTEM_HEADER_UNIT:
-                    if (context.compiler_type == Context::CLANG) {
+                    if (context.settings.compiler_type == Context::Settings::CLANG) {
                         tree.files[file].build_includes.append_range("-fmodule-file=\""sv);
                         tree.files[file].build_includes.append_range(tree.files[header].compiled_path.native());
                         tree.files[file].build_includes.append_range("\" "sv);
@@ -105,9 +105,9 @@ struct DependencyTreeBuilder {
 // Returns true on success.
 ErrorCode DependencyTree::build(Context const& context, std::span<const InputFile> input) {
     for (InputFile const& in : input)
-        files.emplace_back(context, in.path, in.type);
+        files.emplace_back(context.settings, in.path, in.type);
 
-    DependencyTreeBuilder builder{context, *this, context.job_count};
+    DependencyTreeBuilder builder{context, *this, context.settings.job_count};
     context.log.set_task("LOADING DEPENDENCIES", files.size());
 
     // Initialise the maps.

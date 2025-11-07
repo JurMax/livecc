@@ -20,7 +20,7 @@ static constexpr inline ulong hash(auto iterable) {
 // SOURCES:
 // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2020/p1184r2.pdf
 // https://github.com/urnathan/libcody
-static void thread_func(const Context* context, SourceFile* file, int input_fd, int output_fd) {
+static void thread_func(Context const* context, SourceFile* file, int input_fd, int output_fd) {
     char buffer[8192];
     constexpr auto as_string = std::views::transform([] (auto i) { return std::string_view{i}; });
     const auto write = [&] (auto... view) {
@@ -38,7 +38,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
             is_batch = true;
             auto args = line | std::views::split(' ') | as_string;
             auto args_it = args.begin(), args_end = args.end();
-            if (context->verbose)
+            if (context->settings.verbose)
                 context->log.info("GOT INPUT: ", line);
             switch (hash(*args_it++)) {
                 case hash("HELLO"sv):
@@ -46,7 +46,7 @@ static void thread_func(const Context* context, SourceFile* file, int input_fd, 
                         return;
                     break;
                 case hash("MODULE-REPO"sv):
-                    if (!write("MODULE-REPO \""sv, context->output_directory.native(), "/module_repo\""sv))
+                    if (!write("MODULE-REPO \""sv, context->settings.output_directory.native(), "/module_repo\""sv))
                         return;
                     break;
                 case hash("MODULE-EXPORT"sv):

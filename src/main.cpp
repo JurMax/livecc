@@ -69,21 +69,22 @@ ErrorCode add_source_directory(std::vector<InputFile>& files, std::string_view c
 // Returns true if all the arguments are valid.
 ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int argn, char** argv) {
     std::error_code err;
-    context.working_directory = fs::current_path();
-    context.output_file = "build/a.out";
+    Context::Settings& settings = context.settings;
+    settings.working_directory = fs::current_path();
+    settings.output_file = "build/a.out";
     std::ostringstream build_command;
     std::ostringstream link_arguments;
 
     if (const char* env_compiler = std::getenv("CXX"))
-        context.compiler = env_compiler;
+        settings.compiler = env_compiler;
     else if (const char* env_compiler = std::getenv("CC"))
-        context.compiler = env_compiler;
-    if (context.compiler.contains("gcc")
-        || (context.compiler.contains("g++")
-            && !context.compiler.contains("clang++")))
-        context.compiler_type = Context::GCC;
+        settings.compiler = env_compiler;
+    if (settings.compiler.contains("gcc")
+        || (settings.compiler.contains("g++")
+            && !settings.compiler.contains("clang++")))
+        settings.compiler_type = Context::Settings::GCC;
 
-    build_command << context.compiler << ' ';
+    build_command << settings.compiler << ' ';
 
     enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
     for (int i = 1; i < argn; ++i) {
@@ -95,14 +96,14 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
                 if (arg.length() == 2)
                     next_arg_type = OUTPUT;
                 else
-                    context.output_file = arg.substr(2);
+                    settings.output_file = arg.substr(2);
             }
             else if (arg[1] == 'j') {
                 // Set the number of parallel threads to use.
                 uint job_count;
                 std::string_view value = arg.length() == 2 ? argv[++i] : arg.substr(2);
                 if (std::from_chars(value.begin(), value.end(), job_count).ec == std::errc{})
-                    context.job_count = job_count;
+                    settings.job_count = job_count;
                 else context.log.error("invalid job count value: ", value);
             }
             else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=")) {
@@ -112,25 +113,25 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
                 std::string_view dir = arg.substr(2);
                 if (dir[0] == '"' && dir[dir.length() - 1] == '"')
                     dir = dir.substr(1, dir.length() - 2);
-                context.build_include_dirs.push_back(dir);
+                settings.build_include_dirs.push_back(dir);
                 build_command << "-I\"" << dir << "\" ";
             }
             else if (arg.starts_with("--pch")) {
                 if (arg.length() == 5) next_arg_type = PCH;
                 else files.emplace_back(arg, SourceType::PCH);
             }
-            else if (arg == "--standalone") context.build_type = BuildType::STANDALONE;
-            else if (arg == "--shared") context.build_type = BuildType::SHARED;
-            else if (arg == "--no-rebuild-with-O0") context.rebuild_with_O0 = false;
-            else if (arg == "--verbose") context.verbose = true;
-            else if (arg == "--test") context.test = true;
-            else if (arg == "--header-units") context.use_header_units = true;
-            else if (arg == "--no-header-units") context.use_header_units = false;
-            else if (arg.starts_with("-std=c++")) context.cpp_version = arg;
-            else if (arg.starts_with("-std=c")) context.c_version = arg;
+            else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
+            else if (arg == "--shared") settings.build_type = BuildType::SHARED;
+            else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
+            else if (arg == "--verbose") settings.verbose = true;
+            else if (arg == "--test") settings.test = true;
+            else if (arg == "--header-units") settings.use_header_units = true;
+            else if (arg == "--no-header-units") settings.use_header_units = false;
+            else if (arg.starts_with("-std=c++")) settings.cpp_version = arg;
+            else if (arg.starts_with("-std=c")) settings.c_version = arg;
             else if (arg.starts_with("-fuse-ld=")) {
                 link_arguments << arg << ' ';
-                context.custom_linker_set = true;
+                settings.custom_linker_set = true;
             }
             else {
                 build_command << arg << ' ';
@@ -152,7 +153,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
             else if (next_arg_type == PCH)
                 files.emplace_back(arg, SourceType::PCH);
             else if (next_arg_type == OUTPUT)
-                context.output_file = arg;
+                settings.output_file = arg;
             else
                 build_command << arg << ' ';
             next_arg_type = INPUT;
@@ -160,25 +161,25 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
     }
 
     // Set the output directory.
-    context.output_directory = context.output_file.parent_path();
-    switch (context.build_type) {
-        case BuildType::LIVE:       context.output_directory /= "live"; break;
-        case BuildType::SHARED:     context.output_directory /= "shared"; break;
-        case BuildType::STANDALONE: context.output_directory /= "standalone"; break;
+    settings.output_directory = settings.output_file.parent_path();
+    switch (settings.build_type) {
+        case BuildType::LIVE:       settings.output_directory /= "live"; break;
+        case BuildType::SHARED:     settings.output_directory /= "shared"; break;
+        case BuildType::STANDALONE: settings.output_directory /= "standalone"; break;
     }
 
     // Rename the output file if no extension has been given.
-    if (!context.output_file.has_extension()) {
-        std::string new_filename = context.output_file.filename().string();
-        switch (context.build_type) {
+    if (!settings.output_file.has_extension()) {
+        std::string new_filename = settings.output_file.filename().string();
+        switch (settings.build_type) {
             case BuildType::LIVE:   new_filename = "lib" + new_filename + "_live.a"; break;
             case BuildType::SHARED: new_filename = "lib" + new_filename + ".a"; break;
             case BuildType::STANDALONE: break;
         }
-        context.output_file = context.output_file.parent_path() / new_filename;
+        settings.output_file = settings.output_file.parent_path() / new_filename;
     }
 
-    if (context.build_type == BuildType::LIVE || context.build_type == BuildType::SHARED) {
+    if (settings.build_type == BuildType::LIVE || settings.build_type == BuildType::SHARED) {
         build_command << "-fPIC ";
         link_arguments << "-shared ";
     }
@@ -187,40 +188,40 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
     // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
     build_command << "-fdiagnostics-color=always -Winvalid-pch ";
 
-    if (context.test) {
-        if (context.build_type == BuildType::STANDALONE)
+    if (settings.test) {
+        if (settings.build_type == BuildType::STANDALONE)
             context.log.error("tests can't be run in standalone mode!");
         else
             build_command << "-DLCC_TEST ";
     }
 
     // Turn all explicitly passed headers into header units.
-    if (context.use_header_units)
+    if (settings.use_header_units)
         for (InputFile& file : files)
             if (file.type == SourceType::HEADER)
                 file.type = SourceType::HEADER_UNIT;
 
-    context.build_command = build_command.str();
-    context.link_arguments = link_arguments.str();
+    settings.build_command = build_command.str();
+    settings.link_arguments = link_arguments.str();
     return ErrorCode::OK;
 }
 
 
-bool have_build_args_changed(Context const& context) {
+bool have_build_args_changed(Context::Settings const& settings) {
     // TODO: check if the compiler  version updated by checking
     // if their file changes is higher than command.txt
 
     std::vector<char> build_command;
-    build_command.reserve(context.build_command.size()
-        + context.cpp_version.size() + context.c_version.size() + 2);
-    build_command.append_range(context.build_command);
-    build_command.append_range(context.cpp_version);
+    build_command.reserve(settings.build_command.size()
+        + settings.cpp_version.size() + settings.c_version.size() + 2);
+    build_command.append_range(settings.build_command);
+    build_command.append_range(settings.cpp_version);
     build_command.push_back(' ');
-    build_command.append_range(context.c_version);
+    build_command.append_range(settings.c_version);
     build_command.push_back(' ');
 
     // Read build args from file.
-    fs::path command_file = context.output_directory / "command.txt";
+    fs::path command_file = settings.output_directory / "command.txt";
     if (FILE* f = fopen(command_file.c_str(), "rb")) {
         char buff[256];
         bool changed = false;
@@ -251,27 +252,27 @@ bool have_build_args_changed(Context const& context) {
 ErrorCode get_system_include_dirs(Context& context) {
     // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
     char buf[4096];
-    std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.compiler);
+    std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.settings.compiler);
     FILE* pipe = popen(command.c_str(), "r");
-    FILE* mold_pipe = context.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
+    FILE* mold_pipe = context.settings.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
     if (pipe == nullptr) {
-        context.log.error("couldn't find ", context.compiler, ". is it in the path?");
+        context.log.error("couldn't find ", context.settings.compiler, ". is it in the path?");
         return ErrorCode::OPEN_FAILED;
     }
 
-    context.system_include_dirs.clear();
+    context.settings.system_include_dirs.clear();
     while (fgets(buf, sizeof(buf), pipe) != nullptr) {
         if (buf[0] == ' ' && buf[1] == '/') {
             size_t len = 2;
             while (buf[len] != '\n' && buf[len] != '\0') ++len;
             buf[len] = '\0';
-            context.system_include_dirs.push_back(buf + 1);
+            context.settings.system_include_dirs.push_back(buf + 1);
         }
     }
 
     // Check if mold exists, and use it as the default linker if it does.
     if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
-        context.link_arguments += "-fuse-ld=mold ";
+        context.settings.link_arguments += "-fuse-ld=mold ";
     int err = pclose(pipe);
     if (err != 0) {
         context.log.error("compiler returned with error code ", err);
@@ -280,7 +281,7 @@ ErrorCode get_system_include_dirs(Context& context) {
     else return ErrorCode::OK;
 }
 
-void update_compile_commands(Context const& context, std::span<SourceFile> files) {
+void update_compile_commands(Context::Settings const& settings, std::span<SourceFile> files) {
     // If a file was not compiled before, we need to recreate the compile_commands.json
     bool create_compile_commands = false;
     for (SourceFile& file : files)
@@ -290,12 +291,12 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
         }
 
     // If the build args changed, delete all the compiled files so they have to be recompiled.
-    if (have_build_args_changed(context)) {
+    if (have_build_args_changed(settings)) {
         create_compile_commands = true;
         std::error_code err;
         for (SourceFile& file : files)
             if (!file.type.compile_to_timestamp())
-                fs::remove(context.output_directory / file.compiled_path, err);
+                fs::remove(settings.output_directory / file.compiled_path, err);
     }
 
     if (create_compile_commands) {
@@ -303,7 +304,7 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
         // compile_path separately, and you also have the modules present.
         std::ofstream compile_commands("compile_commands.json");
         if (!compile_commands.is_open()) return;
-        std::string dir_string = "\t\t\"directory\": \"" + context.working_directory.native() + "\",\n";
+        std::string dir_string = "\t\t\"directory\": \"" + settings.working_directory.native() + "\",\n";
         compile_commands << "[\n";
 
         bool first = true;
@@ -316,7 +317,7 @@ void update_compile_commands(Context const& context, std::span<SourceFile> files
             compile_commands << dir_string;
             compile_commands << "\t\t\"command\": \"";
             // TODO: dont use the full build command, its way too big
-            std::string command = file.get_build_command(context);
+            std::string command = file.get_build_command(settings);
             for (char c : command) {
                 if (c == '"')
                     compile_commands.put('\\');
@@ -337,10 +338,10 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
 
     // link all the files into one shared library.
     std::ostringstream link_command;
-    link_command << context.build_command;
-    link_command << context.link_arguments;
+    link_command << context.settings.build_command;
+    link_command << context.settings.link_arguments;
     link_command << "-Wl,-z,defs "; // Make sure that all symbols are resolved.
-    link_command << "-o " << context.output_file;
+    link_command << "-o " << context.settings.output_file;
     for (SourceFile& file : files)
         if (!file.type.is_include())
             link_command << ' ' << file.compiled_path;
@@ -349,11 +350,11 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
     context.log.info("Linking sources together...");
     // context.log.info(link_command.str());
 
-    if (context.verbose)
+    if (context.settings.verbose)
         context.log.info(link_command.view());
 
     if (int err = system(link_command.view().data())) {
-        context.log.error("error linking to ", context.output_file, ": ", err);
+        context.log.error("error linking to ", context.settings.output_file, ": ", err);
         return ErrorCode::FAILED;
     }
 
@@ -379,7 +380,7 @@ private:
 public:
     Runtime( Context const& context, std::span<SourceFile> files) : context(context), files(files) {
         // Open the created shared library.
-        this->handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+        this->handle = (link_map *)dlopen(context.settings.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (this->handle == nullptr)
             context.log.error("loading application failed:", dlerror());
 
@@ -462,10 +463,10 @@ private:
             context.log.info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
 
-            fs::path output_path = context.output_directory / "tmp"
+            fs::path output_path = context.settings.output_directory / "tmp"
                     / ("tmp" + (std::to_string(this->temporary_files.size()) + ".so"));
             std::error_code ec;
-            fs::create_directories(context.output_directory / "tmp", ec);
+            fs::create_directories(context.settings.output_directory / "tmp", ec);
             this->temporary_files.push_back(output_path);
             if (compile_file(context, file, output_path, true) == ErrorCode::OK) {
                 load_and_replace_functions(output_path);
@@ -485,7 +486,7 @@ private:
 
 void run_tests(Context const& context) {
     // Open the created shared library.
-    link_map* handle = (link_map *)dlopen(context.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    link_map* handle = (link_map *)dlopen(context.settings.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
     if (handle == nullptr)
         context.log.error("error loading test application: ", dlerror());
     typedef void (*Func)(void);
@@ -510,7 +511,7 @@ void run_tests(Context const& context) {
 
     context.log.info("Running ", test_functions.size(), " tests");
     context.log.set_task("TESTING", test_functions.size());
-    ThreadPool pool(context.job_count);
+    ThreadPool pool(context.settings.job_count);
     for (auto [name, func]: test_functions)
         pool.enqueue([&context, func] -> ErrorCode {
             func();
@@ -550,15 +551,15 @@ int main(int argn, char** argv) {
     err = dependency_tree.build(context, input);
     if (err != ErrorCode::OK) return (int)err;
 
-    if (dependency_tree.need_compilation() || !fs::exists(context.output_file)) {
-        update_compile_commands(context, dependency_tree.files);
+    if (dependency_tree.need_compilation() || !fs::exists(context.settings.output_file)) {
+        update_compile_commands(context.settings, dependency_tree.files);
         err = compile_and_link(context, dependency_tree.files);
         if (err != ErrorCode::OK) return (int)err;
     }
 
-    if (context.test)
+    if (context.settings.test)
         run_tests(context);
-    else if (context.build_type == BuildType::LIVE) {
+    else if (context.settings.build_type == BuildType::LIVE) {
         Runtime runtime{context, dependency_tree.files};
         runtime.run();
     }

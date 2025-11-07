@@ -78,7 +78,7 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
 
     // Compile everything.
     {
-        Compiler compiler{context, files, info, context.job_count};
+        Compiler compiler{context, files, info, context.settings.job_count};
 
         // Add all files that have no dependencies to the compile queue.
         // As these compile they will add all the other files too.
@@ -154,23 +154,23 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
 
-    std::string build_command = file.get_build_command(context, output_path, live_compile);
+    std::string build_command = file.get_build_command(context.settings, output_path, live_compile);
     std::optional<ModuleMapperPipe> module_pipe;
     std::error_code ec;
 
     // Create PCH file.
     if (file.type == SourceType::PCH) {
-        if (context.compiler_type == Context::GCC)
+        if (context.settings.compiler_type == Context::Settings::GCC)
             fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
         else
             std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
     }
-    else if (context.compiler_type == Context::GCC) {
+    else if (context.settings.compiler_type == Context::Settings::GCC) {
         module_pipe.emplace(context, file);
         build_command += module_pipe->mapper_arg();
     }
 
-    if (context.verbose)
+    if (context.settings.verbose)
         context.log.info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
     else
         context.log.info("Compiling ", file.source_path, " to ", output_path);

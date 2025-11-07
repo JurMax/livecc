@@ -81,7 +81,7 @@ public:
     std::vector<uint> parents;
 
 public:
-    SourceFile(Context const& context, fs::path const& path, SourceType type);
+    SourceFile(Context::Settings const& settings, fs::path const& path, SourceType type);
 
     /** Read the dependencies directly from the file. Return true on success. */
     ErrorCode read_dependencies(Context const& context);
@@ -89,9 +89,9 @@ public:
     /** Check if the file has changed since compilation. */
     bool has_source_changed();
 
-    std::string get_build_command(Context const& context, fs::path const& output_path, bool live_compile) const;
-    inline std::string get_build_command(Context const& context) const {
-        return get_build_command(context, compiled_path, false);
+    std::string get_build_command(Context::Settings const& settings, fs::path const& output_path, bool live_compile) const;
+    inline std::string get_build_command(Context::Settings const& settings) const {
+        return get_build_command(settings, compiled_path, false);
     }
 
     // remove ".gch"

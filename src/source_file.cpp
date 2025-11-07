@@ -30,12 +30,12 @@ using namespace std::literals;
 
 
 // Make a path lexically normal, and possibly relative to the working directory
-static fs::path normalise_path(Context const& context, const fs::path& path) {
+static fs::path normalise_path(Context::Settings const& settings, const fs::path& path) {
     std::error_code err;
     fs::path absolute_path = fs::canonical(path, err);
     if (err)
         return path;
-    fs::path relative_path = fs::relative(path, context.working_directory, err);
+    fs::path relative_path = fs::relative(path, settings.working_directory, err);
     if (!err && relative_path.native()[0] != '.')
         return relative_path;
     else
@@ -58,7 +58,7 @@ struct Parser {
 
     Parser(SourceFile& file) : file(file), f(file.source_path) {}
 
-    ErrorCode parse(Context const& context) {
+    ErrorCode parse(Context::Settings const& settings) {
         if (!f.is_open())
             return ErrorCode::OPEN_FAILED;
         enum { INCLUDE, IMPORT, MODULE } read_mode;
@@ -114,7 +114,7 @@ struct Parser {
 
         write_characters:
             switch (read_mode) {
-                case INCLUDE: register_include(context); break;
+                case INCLUDE: register_include(settings); break;
                 case IMPORT: file.dependencies.emplace_back(std::string{buffer, buf_len}, SourceType::MODULE); break;
                 case MODULE: file.module_name = std::string{buffer, buf_len}; break;
             }
@@ -164,43 +164,43 @@ struct Parser {
         return buf_len != sizeof(buffer);
     }
 
-    void register_include(Context const& context) {
+    void register_include(Context::Settings const& settings) {
         if (buf_len <= 2) return;
         fs::path path(std::string_view(buffer + 1, buf_len - 2));
 
         if (buffer[0] == '<') {
-            file.dependencies.emplace_back(path, context.use_header_units
+            file.dependencies.emplace_back(path, settings.use_header_units
                     ? SourceType::SYSTEM_HEADER_UNIT : SourceType::SYSTEM_HEADER);
             return;
         }
 
         if (path.is_absolute()) {
-            try_add_include(context, path);
+            try_add_include(settings, path);
             return;
         }
-        if (try_add_include(context, file.source_path.parent_path() / path))
+        if (try_add_include(settings, file.source_path.parent_path() / path))
             return;
-        for (const std::string_view& dir : context.build_include_dirs)
-            if (try_add_include(context, dir / path))
+        for (const std::string_view& dir : settings.build_include_dirs)
+            if (try_add_include(settings, dir / path))
                 return;
-        if (try_add_include(context, "/usr/local/include" / path) ||
-            try_add_include(context, "/usr/include" / path))
+        if (try_add_include(settings, "/usr/local/include" / path) ||
+            try_add_include(settings, "/usr/include" / path))
             return;
     }
-    bool try_add_include(Context const& context, const fs::path& path) {
+    bool try_add_include(Context::Settings const& settings, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
             SourceType::Type type = SourceType::from_extension(path.native()).value_or(SourceType::BARE_INCLUDE);
             switch (type) {
                 case SourceType::HEADER:
-                    if (context.use_header_units)
+                    if (settings.use_header_units)
                         type = SourceType::HEADER_UNIT;
                     break;
                 default:
                     type = SourceType::BARE_INCLUDE;
                     break;
             }
-            file.dependencies.emplace_back(normalise_path(context, path), type);
+            file.dependencies.emplace_back(normalise_path(settings, path), type);
             return true;
         }
         return false;
@@ -208,16 +208,16 @@ struct Parser {
 };
 
 
-SourceFile::SourceFile(Context const& context, const fs::path& path, SourceType type)
-    : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(context, path) : path) {
+SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, SourceType type)
+    : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(settings, path) : path) {
 
     if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT)
-        compiled_path = context.output_directory / "system" / source_path;
+        compiled_path = settings.output_directory / "system" / source_path;
     else {
         const char* path = source_path.c_str();
         if (source_path.is_absolute())
             path += source_path.root_path().native().size();
-        compiled_path = context.output_directory / path;
+        compiled_path = settings.output_directory / path;
     }
 
     switch (type) {
@@ -252,12 +252,12 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
     fs::file_time_type source_write_time;
     if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT) {
         // Check the system header write time by going through all the options.
-        for (const std::string_view& dir : context.build_include_dirs) {
+        for (const std::string_view& dir : context.settings.build_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
                 return ErrorCode::OK;
         }
-        for (const fs::path& dir : context.system_include_dirs) {
+        for (const fs::path& dir : context.settings.system_include_dirs) {
             source_write_time = fs::last_write_time(dir / source_path, err);
             if (!err)
                 return ErrorCode::OK;
@@ -271,7 +271,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
 
         // Get the dependencies of anything but the system headers.
         Parser parser(*this);
-        ErrorCode ret = err ? ErrorCode::OPEN_FAILED : parser.parse(context);
+        ErrorCode ret = err ? ErrorCode::OPEN_FAILED : parser.parse(context.settings);
         switch (ret) {
             case ErrorCode::OK:
                 source_time = source_write_time;
@@ -307,18 +307,18 @@ bool SourceFile::has_source_changed() {
         return !compiled_time || new_source_time > *compiled_time;
     }
 }
-std::string SourceFile::get_build_command(Context const& context, const fs::path& output_path, bool live_compile) const {
+std::string SourceFile::get_build_command(Context::Settings const& settings, const fs::path& output_path, bool live_compile) const {
     if (type.compile_to_timestamp())
         return std::format("touch \"{}\"", output_path.native());
 
     std::ostringstream command;
-    command << context.build_command;
-    command << (type == SourceType::C_UNIT ? context.c_version : context.cpp_version) << ' ';
+    command << settings.build_command;
+    command << (type == SourceType::C_UNIT ? settings.c_version : settings.cpp_version) << ' ';
 
-    if (type != SourceType::PCH && context.compiler_type == Context::GCC)
+    if (type != SourceType::PCH && settings.compiler_type == Context::Settings::GCC)
         command << "-fmodules ";
 
-    if (context.include_source_parent_dir) {
+    if (settings.include_source_parent_dir) {
         if (source_path.has_parent_path())
             command << "-I\"" << source_path.parent_path().native() << "\" ";
         else command << "-I. ";
@@ -338,14 +338,14 @@ std::string SourceFile::get_build_command(Context const& context, const fs::path
     }
     else {
         command << "-shared ";
-        if (context.rebuild_with_O0)
+        if (settings.rebuild_with_O0)
             command << "-O0 ";
     }
 
     command << '"' << source_path.native() << '"';
 
     // GCC uses the IPC for this. // TODO: check if supplying the output is fine.
-    if (context.compiler_type == Context::GCC)
+    if (settings.compiler_type == Context::Settings::GCC)
         switch (type) {
             case SourceType::HEADER_UNIT: case SourceType::SYSTEM_HEADER_UNIT: case SourceType::MODULE: return command.str();
             default: break;
