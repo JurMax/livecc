@@ -540,7 +540,7 @@ int main(int argn, char** argv) {
         if (input.empty()) {
             // TODO: show help.
             context.log.info("no input files");
-            return 2;
+            return (int)ErrorCode::NO_INPUT;
         }
     }
 
@@ -551,8 +551,9 @@ int main(int argn, char** argv) {
     err = dependency_tree.build(context, input);
     if (err != ErrorCode::OK) return (int)err;
 
+    update_compile_commands(context.settings, dependency_tree.files);
+
     if (dependency_tree.need_compilation() || !fs::exists(context.settings.output_file)) {
-        update_compile_commands(context.settings, dependency_tree.files);
         err = compile_and_link(context, dependency_tree.files);
         if (err != ErrorCode::OK) return (int)err;
     }

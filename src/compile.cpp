@@ -46,7 +46,7 @@ struct Compiler {
 };
 
 /** Return true if the given depends (indirectly) on the given dependency. Is slow */
-static bool depends_on(std::span<SourceFile> files, uint file, uint dependency) {
+static bool depends_on(std::span<const SourceFile> files, uint file, uint dependency) {
     for (uint child : files[dependency].children) {
         if (child == file) return true;
         else if (depends_on(files, file, child)) return true;
@@ -54,7 +54,7 @@ static bool depends_on(std::span<SourceFile> files, uint file, uint dependency) 
     return false;
 }
 
-static bool depends_on_print(Context::Logging& log, std::span<SourceFile> files, uint file, uint dependency) {
+static bool depends_on_print(Context::Logging& log, std::span<const SourceFile> files, uint file, uint dependency) {
     for (uint child : files[dependency].children) {
         if (child == file) {
             log.print(files[child].source_path);

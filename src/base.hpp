@@ -7,7 +7,9 @@ enum class ErrorCode {
 
     OPEN_FAILED,
     UNEXPECTED_END,
-    BUFFER_TOO_SMALL
+    BUFFER_TOO_SMALL,
+
+    NO_INPUT
 };
 
 struct Range {

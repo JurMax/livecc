@@ -64,6 +64,7 @@ public:
     // should also be added to the source files with the header unit type
     std::string module_name; // only set for modules.
 
+    // TODO: move this out of here
     struct Dependency {
         fs::path path;
         SourceType type;
