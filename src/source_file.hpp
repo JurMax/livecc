@@ -17,6 +17,7 @@ struct SourceType {
         SYSTEM_HEADER_UNIT, // compiled as header unit
         PCH,                // Compiled. There can be only 1 pch
         BARE_INCLUDE,       // Not compiled, only included
+        OBJECT,             // Only linked.
     };
 
     SourceType(Type type) : type(type) {}
@@ -29,7 +30,7 @@ struct SourceType {
 
     inline bool compile_to_timestamp() const {
         switch (type) {
-            case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: return true;
+            case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: case OBJECT: return true;
             default: return false;
         }
     };

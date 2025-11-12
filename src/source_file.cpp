@@ -15,14 +15,49 @@ using namespace std::literals;
 /*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
     size_t i = path.find_last_of('.');
     if (i != std::string_view::npos) {
-        std::string_view ext = path.substr(i + 1);
-        if (ext == "c") return {C_UNIT};
-        if (ext == "cppm") return {MODULE};
-        constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
-        constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
-        for (size_t i = 0; i < 8; ++i) {
-            if (ext == unit_ext[i]) return {UNIT};
-            if (ext == head_ext[i]) return {HEADER};
+        // std::string_view ext = path.substr(i + 1);
+        // if (ext == "c") return {C_UNIT};
+        // if (ext == "cppm") return {MODULE};
+        // if (ext == ".o") return {OBJECT};
+        // constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
+        // constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
+        // for (size_t i = 0; i < 8; ++i) {
+        //     if (ext == unit_ext[i]) return {UNIT};
+        //     if (ext == head_ext[i]) return {HEADER};
+        // }
+
+
+        SourceType type = HEADER;
+        if (++i == path.size()) return {};
+        switch (path[i]) {
+            case 'c': case 'C':
+                if (++i == path.size()) return {C_UNIT};
+                type = UNIT;
+                break;
+            case 'h': case 'H':
+                if (++i == path.size()) return {HEADER};
+                type = HEADER;
+                break;
+            case 'o': case 'O': // o, ob, obj
+                if (++i == path.size()) return {OBJECT};
+                if (path[i] == 'b' || path[i] == 'B') {
+                    if (++i == path.size()) return {OBJECT};
+                    if (path[i] == 'j' || path[i] == 'J')
+                        if (++i == path.size()) return {OBJECT};
+                }
+                return {};
+            default: return {};
+        }
+
+        switch (path[i]) {
+            default: break;
+            case 'h': case 'H': if (++i == path.size()) return {HEADER}; break;
+            case 'c': case 'C': if (++i == path.size()) return   {type}; break;
+            case '+': case 'x': case 'X': case 'p': case 'P':
+                char letter = path[i];
+                if (++i == path.size() || path[i] == letter)
+                    return {type};
+                break;
         }
     }
     return {};
@@ -228,6 +263,7 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
         case SourceType::HEADER:
         case SourceType::SYSTEM_HEADER:
         case SourceType::BARE_INCLUDE:
+        case SourceType::OBJECT:
             compiled_path += ".timestamp"; break;
         case SourceType::HEADER_UNIT:
         case SourceType::SYSTEM_HEADER_UNIT:

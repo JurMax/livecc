@@ -295,8 +295,10 @@ void update_compile_commands(Context::Settings const& settings, std::span<Source
         create_compile_commands = true;
         std::error_code err;
         for (SourceFile& file : files)
-            if (!file.type.compile_to_timestamp())
-                fs::remove(settings.output_directory / file.compiled_path, err);
+            if (!file.type.compile_to_timestamp()) {
+                fs::remove(file.compiled_path, err);
+                file.compiled_time.reset();
+            }
     }
 
     if (create_compile_commands) {
