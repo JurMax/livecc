@@ -167,7 +167,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
         else
             std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
     }
-    else if (context.settings.compiler_type == Context::Settings::GCC) {
+    else if (context.settings.compiler_type == Context::Settings::GCC && file.type.uses_modules()) {
         module_pipe.emplace(context, file);
         build_command += module_pipe->mapper_arg();
     }

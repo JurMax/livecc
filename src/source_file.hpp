@@ -32,6 +32,9 @@ struct SourceType {
     inline constexpr bool imports_modules() const {
         switch (type) { case UNIT: case HEADER_UNIT: case MODULE: return true; default: return false; }
     }
+    inline constexpr bool uses_modules() const {
+        return imports_modules() || type == Type::SYSTEM_HEADER_UNIT;
+    }
 
     inline constexpr bool is_pch() const {
         switch (type) { case PCH: case C_PCH: return true; default: return false; }

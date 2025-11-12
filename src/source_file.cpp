@@ -342,9 +342,8 @@ std::string SourceFile::get_build_command(Context::Settings const& settings, con
     command << settings.build_command;
     command << (type == SourceType::C_UNIT ? settings.c_version : settings.cpp_version) << ' ';
 
-    if (settings.compiler_type == Context::Settings::GCC)
-        if (type.imports_modules() || type == SourceType::SYSTEM_HEADER_UNIT)
-            command << "-fmodules ";
+    if (settings.compiler_type == Context::Settings::GCC && type.uses_modules())
+        command << "-fmodules ";
 
     if (settings.include_source_parent_dir) {
         if (source_path.has_parent_path())
