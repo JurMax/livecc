@@ -2,7 +2,7 @@ SRC := $(wildcard src/*.cpp) src/plthook/plthook_elf.c
 HEADERS := $(wildcard src/*.hpp)
 OBJ := $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(SRC)))
 
-ARGS := -std=c++23 -Wall -O3
+ARGS := -std=c++23 -g -Wall
 CC := clang++ ${ARGS}
 
 everything:
@@ -24,4 +24,5 @@ db: main
 	gdb -ex run --args ./livecc src
 
 clean:
-	rm src/*.o livecc
+	rm src/*.o src/**/*.o livecc
+	rm -r build

@@ -74,6 +74,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
     settings.output_file = "build/a.out";
     std::ostringstream build_command;
     std::ostringstream link_arguments;
+    link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
 
     if (const char* env_compiler = std::getenv("CXX"))
         settings.compiler = env_compiler;
@@ -86,7 +87,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
 
     build_command << settings.compiler << ' ';
 
-    enum { INPUT, OUTPUT, PCH, FLAG } next_arg_type = INPUT;
+    enum { INPUT, OUTPUT, PCH, PCH_CPP, FLAG } next_arg_type = INPUT;
     for (int i = 1; i < argn; ++i) {
         std::string_view arg(argv[i]);
 
@@ -116,10 +117,8 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
                 settings.build_include_dirs.push_back(dir);
                 build_command << "-I\"" << dir << "\" ";
             }
-            else if (arg.starts_with("--pch")) {
-                if (arg.length() == 5) next_arg_type = PCH;
-                else files.emplace_back(arg, SourceType::PCH);
-            }
+            else if (arg == "--pch") next_arg_type = PCH;
+            else if (arg == "--c++pch") next_arg_type = PCH_CPP;
             else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
             else if (arg == "--shared") settings.build_type = BuildType::SHARED;
             else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
@@ -151,6 +150,8 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
                     context.log.error("unknown input supplied: ", arg);
             }
             else if (next_arg_type == PCH)
+                files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH);
+            else if (next_arg_type == PCH_CPP)
                 files.emplace_back(arg, SourceType::PCH);
             else if (next_arg_type == OUTPUT)
                 settings.output_file = arg;
@@ -345,8 +346,13 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
     link_command << "-Wl,-z,defs "; // Make sure that all symbols are resolved.
     link_command << "-o " << context.settings.output_file;
     for (SourceFile& file : files)
-        if (!file.type.is_include())
-            link_command << ' ' << file.compiled_path;
+        switch (file.type) {
+            case SourceType::UNIT: case SourceType::C_UNIT: case SourceType::MODULE:
+                link_command << ' ' << file.compiled_path; break;
+            case SourceType::OBJECT:
+                link_command << ' ' << file.source_path; break;
+            default: break;
+        }
     link_command << '\0';
 
     context.log.info("Linking sources together...");
@@ -537,7 +543,8 @@ int main(int argn, char** argv) {
         return (int)err;
     }
 
-    if (input.empty()) {
+    // Add the src directory by default if no sources have been specified.
+    if (std::ranges::find_if(input, [] (InputFile& file) { return !file.type.is_include(); }) == input.end()) {
         add_source_directory(input, "src");
         if (input.empty()) {
             // TODO: show help.
@@ -552,6 +559,8 @@ int main(int argn, char** argv) {
     DependencyTree dependency_tree;
     err = dependency_tree.build(context, input);
     if (err != ErrorCode::OK) return (int)err;
+
+
 
     update_compile_commands(context.settings, dependency_tree.files);
 

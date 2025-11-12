@@ -25,12 +25,12 @@ struct DependencyTreeBuilder {
         }
 
         // Mark the PCH as having zero dependencies, as it needs to be compiled first.
-        if (tree.files[file].type == SourceType::PCH)
+        if (tree.files[file].type.is_pch())
             tree.files[file].dependencies.clear();
         bool added_pch = false;
 
         // Get pointers to the dependencies so the list remains valid even if the files list moves.
-        SourceFile::Dependency* dependency = &tree.files[file].dependencies[0u];
+        SourceFile::Dependency* dependency = &*tree.files[file].dependencies.begin();
         SourceFile::Dependency* dep_end = dependency + tree.files[file].dependencies.size();
         for (; dependency != dep_end; ++dependency) {
             uint header;
@@ -73,6 +73,7 @@ struct DependencyTreeBuilder {
 
             switch (tree.files[header].type) {
                 case SourceType::PCH:
+                case SourceType::C_PCH:
                     if (!added_pch) {
                         added_pch = true;
                         tree.files[file].build_includes.append_range("-include \""sv);
@@ -82,7 +83,7 @@ struct DependencyTreeBuilder {
                     break;
                 case SourceType::HEADER_UNIT:
                 case SourceType::SYSTEM_HEADER_UNIT:
-                    if (context.settings.compiler_type == Context::Settings::CLANG) {
+                    if (context.settings.compiler_type == Context::Settings::CLANG && tree.files[header].source_time) {
                         tree.files[file].build_includes.append_range("-fmodule-file=\""sv);
                         tree.files[file].build_includes.append_range(tree.files[header].compiled_path.native());
                         tree.files[file].build_includes.append_range("\" "sv);
@@ -125,11 +126,15 @@ ErrorCode DependencyTree::build(Context const& context, std::span<const InputFil
         else if (files[file].type.is_include())
             builder.source_map.emplace(files[file].source_path, file);
 
-        // Make all files depend on the PCH // TODO: dont do this here so that we may support multiple pchs.
+        // Make all files depend on the PCH
         if (files[file].type == SourceType::PCH)
             for (SourceFile& other : files)
-                if (!other.type.compile_to_timestamp())
+                if (other.type.imports_modules())
                     other.dependencies.emplace_back(files[file].source_path, SourceType::PCH);
+        if (files[file].type == SourceType::C_PCH)
+            for (SourceFile& other : files)
+                if (other.type == SourceType::C_UNIT)
+                    other.dependencies.emplace_back(files[file].source_path, SourceType::C_PCH);
     }
 
     // Read all the files. Store the size to avoid mapping a
@@ -167,12 +172,9 @@ static uint mark_file_for_compilation(std::span<SourceFile> const& files, uint f
 }
 
 static uint check_file_for_compilation(std::span<SourceFile> const& files, uint file) {
-    bool has_changed = !files[file].source_time || !files[file].compiled_time
-        || *files[file].source_time > *files[file].compiled_time;
     visited_flag(files[file]) = true;
-    if (!files[file].source_time)
-        return 0; // File doesn't exist, which should have given a warning earlier already.
-    else if (has_changed)
+    if (!files[file].compiled_time
+        || (files[file].source_time && *files[file].source_time > *files[file].compiled_time))
         return mark_file_for_compilation(files, file);
     else {
         uint compile_count = 0;

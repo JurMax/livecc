@@ -9,26 +9,35 @@ namespace fs = std::filesystem;
 struct SourceType {
     enum Type {
         UNIT,               // A C++ source file/translation unit
-        C_UNIT,             // A C source file/translation unit TODO
+        C_UNIT,             // A C source file/translation unit.
         MODULE,             // A C++ module, gets compiled twice.
         HEADER,             // Not compiled
         HEADER_UNIT,        // Compiled as header unit
         SYSTEM_HEADER,      // Not compiled
         SYSTEM_HEADER_UNIT, // compiled as header unit
-        PCH,                // Compiled. There can be only 1 pch
+        PCH,                // Compiled. There can be only 1 C++ pch
+        C_PCH,              // Compiled. There can be only 1 C pch
         BARE_INCLUDE,       // Not compiled, only included
         OBJECT,             // Only linked.
     };
 
-    SourceType(Type type) : type(type) {}
-    SourceType& operator=(Type new_type) { type = new_type; return *this; }
-    operator Type() const { return type; }
+    inline constexpr SourceType(Type type) : type(type) {}
+    inline constexpr SourceType& operator=(Type new_type) { type = new_type; return *this; }
+    inline constexpr operator Type() const { return type; }
 
-    inline bool is_include() const {
-        switch (type) { case UNIT: case C_UNIT: case MODULE: return false; default: return true; }
+    /** Is translation unit */
+    inline constexpr bool is_include() const {
+        switch (type) { case UNIT: case C_UNIT: case MODULE: case OBJECT: return false; default: return true; }
+    }
+    inline constexpr bool imports_modules() const {
+        switch (type) { case UNIT: case HEADER_UNIT: case MODULE: return true; default: return false; }
     }
 
-    inline bool compile_to_timestamp() const {
+    inline constexpr bool is_pch() const {
+        switch (type) { case PCH: case C_PCH: return true; default: return false; }
+    }
+
+    inline constexpr bool compile_to_timestamp() const {
         switch (type) {
             case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: case OBJECT: return true;
             default: return false;

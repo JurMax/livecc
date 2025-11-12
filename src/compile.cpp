@@ -148,7 +148,9 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
 
 ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
     // If the output is only a timestamp, just update it.
-    if (file.type.compile_to_timestamp()) {
+    // If a file is an include but it doesn't exist don't
+    // give an error, but also just note down the time.
+    if (file.type.compile_to_timestamp() || (file.type.is_include() && !file.source_time)) {
         file.compiled_time = file.source_time;
         std::ofstream stream(output_path);
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
@@ -159,7 +161,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     std::error_code ec;
 
     // Create PCH file.
-    if (file.type == SourceType::PCH) {
+    if (file.type.is_pch()) {
         if (context.settings.compiler_type == Context::Settings::GCC)
             fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
         else
@@ -171,7 +173,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     }
 
     if (context.settings.verbose)
-        context.log.info("Compiling ", file.source_path, " to ", output_path, " using: ", build_command);
+        context.log.info("Compiling ", file.source_path, " to ", output_path, "(", file.type, ")", " using: ", build_command);
     else
         context.log.info("Compiling ", file.source_path, " to ", output_path);
 

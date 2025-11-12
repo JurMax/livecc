@@ -15,18 +15,6 @@ using namespace std::literals;
 /*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
     size_t i = path.find_last_of('.');
     if (i != std::string_view::npos) {
-        // std::string_view ext = path.substr(i + 1);
-        // if (ext == "c") return {C_UNIT};
-        // if (ext == "cppm") return {MODULE};
-        // if (ext == ".o") return {OBJECT};
-        // constexpr char unit_ext[8][4] = {"cc", "cp", "cpp", "cxx", "CPP", "c++", "C"};
-        // constexpr char head_ext[8][4] = {"hh", "hp", "hpp", "hxx", "HPP", "h++", "H", "h"};
-        // for (size_t i = 0; i < 8; ++i) {
-        //     if (ext == unit_ext[i]) return {UNIT};
-        //     if (ext == head_ext[i]) return {HEADER};
-        // }
-
-
         SourceType type = HEADER;
         if (++i == path.size()) return {};
         switch (path[i]) {
@@ -269,6 +257,7 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
         case SourceType::SYSTEM_HEADER_UNIT:
             compiled_path += ".pcm"; break;
         case SourceType::PCH:
+        case SourceType::C_PCH:
             compiled_path += ".gch"; break;
     }
 }
@@ -301,7 +290,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
         // Not finding system headers is okay, they might be hidden behind a preprocessor.
         return ErrorCode::OK;
     }
-    else {
+    else if (type != SourceType::OBJECT) {
         source_time.reset();
         source_write_time = fs::last_write_time(source_path, err);
 
@@ -328,6 +317,8 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
         }
         return ret;
     }
+
+    return ErrorCode::OK;
 }
 
 
@@ -351,8 +342,9 @@ std::string SourceFile::get_build_command(Context::Settings const& settings, con
     command << settings.build_command;
     command << (type == SourceType::C_UNIT ? settings.c_version : settings.cpp_version) << ' ';
 
-    if (type != SourceType::PCH && settings.compiler_type == Context::Settings::GCC)
-        command << "-fmodules ";
+    if (settings.compiler_type == Context::Settings::GCC)
+        if (type.imports_modules() || type == SourceType::SYSTEM_HEADER_UNIT)
+            command << "-fmodules ";
 
     if (settings.include_source_parent_dir) {
         if (source_path.has_parent_path())
@@ -364,6 +356,8 @@ std::string SourceFile::get_build_command(Context::Settings const& settings, con
 
     if (type == SourceType::PCH)
         command << "-xc++-header -c ";
+    else if (type == SourceType::C_PCH)
+        command << "-xc-header -c ";
     else if (type == SourceType::HEADER_UNIT)
         command << "-fmodule-header=user -xc++-header "; // compile all headers as c++
     else if (type == SourceType::SYSTEM_HEADER_UNIT)
