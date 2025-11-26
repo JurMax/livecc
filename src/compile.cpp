@@ -13,7 +13,7 @@
 struct Compiler {
     struct FileInfo {
         bool failed = false;
-        std::atomic<int> compiled_parents = 0;
+        std::atomic<uint> compiled_parents = 0;
     };
 
     Context const& context;
@@ -22,7 +22,7 @@ struct Compiler {
     ThreadPool pool;
 
     void add_to_compile_queue(uint file) {
-        if (files[file].need_compile) {
+        if (files[file].need_compile()) {
             pool.enqueue([this, file] -> ErrorCode {
                 ErrorCode err = compile_file(context, files[file]);
                 if (err == ErrorCode::OK)
@@ -70,7 +70,7 @@ static bool depends_on_print(Context::Logging& log, std::span<const SourceFile> 
 
 ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
-        return f.need_compile && !f.type.compile_to_timestamp();
+        return f.need_compile() && !f.type.compile_to_timestamp();
     });
     context.log.set_task("COMPILING", compile_count);
 

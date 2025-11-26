@@ -74,7 +74,6 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
     settings.output_file = "build/a.out";
     std::ostringstream build_command;
     std::ostringstream link_arguments;
-    link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
 
     if (const char* env_compiler = std::getenv("CXX"))
         settings.compiler = env_compiler;
@@ -86,6 +85,8 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
         settings.compiler_type = Context::Settings::GCC;
 
     build_command << settings.compiler << ' ';
+    build_command << "-fdiagnostics-color=always -Wpedantic -Wall -Wextra -Winvalid-pch -Wsuggest-override ";
+    link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
 
     enum { INPUT, OUTPUT, PCH, PCH_CPP, FLAG } next_arg_type = INPUT;
     for (int i = 1; i < argn; ++i) {
@@ -187,7 +188,6 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, int a
     // if (context.build_type == LIVE)
         // build_command << "-fno-inline ";// -fno-ipa-sra";
     // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-    build_command << "-fdiagnostics-color=always -Winvalid-pch ";
 
     if (settings.test) {
         if (settings.build_type == BuildType::STANDALONE)
@@ -295,11 +295,10 @@ void update_compile_commands(Context::Settings const& settings, std::span<Source
     if (have_build_args_changed(settings)) {
         create_compile_commands = true;
         std::error_code err;
-        for (SourceFile& file : files)
-            if (!file.type.compile_to_timestamp()) {
-                fs::remove(file.compiled_path, err);
-                file.compiled_time.reset();
-            }
+        for (SourceFile& file : files) {
+            fs::remove(file.compiled_path, err);
+            file.compiled_time.reset();
+        }
     }
 
     if (create_compile_commands) {
@@ -390,7 +389,7 @@ public:
         // Open the created shared library.
         this->handle = (link_map *)dlopen(context.settings.output_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         if (this->handle == nullptr)
-            context.log.error("loading application failed:", dlerror());
+            context.log.error("loading application failed: ", dlerror());
 
         if (plthook_open_by_handle(&this->plthook, this->handle) != 0) {
             context.log.error("plthook error: ", plthook_error());

@@ -24,5 +24,5 @@ db: main
 	gdb -ex run --args ./livecc src
 
 clean:
-	rm src/*.o src/**/*.o livecc
 	rm -r build
+	rm src/*.o src/**/*.o livecc

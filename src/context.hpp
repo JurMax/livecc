@@ -35,7 +35,7 @@ struct Context {
         // Command line arguments.
         BuildType build_type = BuildType::LIVE;
         bool include_source_parent_dir = true;
-        bool use_header_units = true;
+        bool use_header_units = false;
         bool rebuild_with_O0 = false;
         bool verbose = false;
         bool test = false; // make this a build type that just uses the same files.
@@ -65,15 +65,17 @@ struct Context {
             std::unique_lock<std::mutex> lock(mutex);
             clear_term();
             (std::cout << ... << args) << '\n';
-            print_bar();
+            if (!task_name.empty())
+                print_bar();
         }
 
         inline void error(const auto&... args) {
             std::unique_lock<std::mutex> lock(mutex);
             clear_term();
-            std::cerr << "\e[1;31mERROR:\e[0m \e[1m";
-            (std::cerr << ... << args) << "\e[0m\n";
-            print_bar();
+            std::cerr << "\x1B[1;31mERROR:\x1B[0m \x1B[1m";
+            (std::cerr << ... << args) << "\x1B[0m\n";
+            if (!task_name.empty())
+                print_bar();
         }
 
         void set_task(const std::string_view& task, int task_total);

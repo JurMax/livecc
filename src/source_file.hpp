@@ -70,7 +70,9 @@ public:
     std::optional<fs::file_time_type> source_time;
     std::optional<fs::file_time_type> compiled_time;
 
-    bool need_compile = false;
+    inline bool need_compile() {
+        return !compiled_time || (source_time && *source_time > *compiled_time);
+    }
     bool _temporary; // usable by multiple systems to store some temporary data.
 
     // TODO: implement this. Also add support for header units. Used header units

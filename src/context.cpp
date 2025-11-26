@@ -21,7 +21,7 @@ void Context::Logging::set_task(const std::string_view& task, int task_total) {
 
 void Context::Logging::increase_task_total(int amount) {
     std::unique_lock<std::mutex> lock(mutex);
-    bar_task_total++;
+    bar_task_total += amount;
 }
 
 void Context::Logging::clear_task() {

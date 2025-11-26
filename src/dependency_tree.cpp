@@ -1,6 +1,7 @@
 #include "dependency_tree.hpp"
 
 #include <shared_mutex>
+#include <system_error>
 #include <unordered_map>
 
 #include "thread_pool.hpp"
@@ -14,8 +15,8 @@ struct DependencyTreeBuilder {
     std::unordered_map<fs::path, uint> source_map = {};
 
     // TODO: turn this into read/write thingies.
-    std::shared_mutex files_mutex;
-    std::mutex children_mutex;
+    std::shared_mutex files_mutex = {};
+    std::mutex children_mutex = {};
 
     ErrorCode map_file_dependencies(uint file) {
         files_mutex.lock_shared();
@@ -70,6 +71,10 @@ struct DependencyTreeBuilder {
                     files_mutex.lock_shared();
                 }
             }
+
+            // Make sure a file doesn't depend on itself.
+            if (file == header)
+                continue;
 
             switch (tree.files[header].type) {
                 case SourceType::PCH:
@@ -163,23 +168,30 @@ ErrorCode DependencyTree::build(Context const& context, std::span<const InputFil
 static bool& visited_flag(SourceFile& file) { return file._temporary; }
 
 static uint mark_file_for_compilation(std::span<SourceFile> const& files, uint file) {
+    visited_flag(files[file]) = true;
     uint compile_count = 1;
-    files[file].need_compile = true;
+
+    // Delete the compiled file so we can remember we need to recompile.
+    if (files[file].compiled_time) {
+        std::error_code err;
+        fs::remove(files[file].compiled_path, err);
+        files[file].compiled_time.reset();
+    }
+
     for (uint child : files[file].children)
-        if (!files[child].need_compile)
+        if (files[child].compiled_time)
             compile_count += mark_file_for_compilation(files, child);
     return compile_count;
 }
 
 static uint check_file_for_compilation(std::span<SourceFile> const& files, uint file) {
-    visited_flag(files[file]) = true;
-    if (!files[file].compiled_time
-        || (files[file].source_time && *files[file].source_time > *files[file].compiled_time))
+    if (files[file].need_compile())
         return mark_file_for_compilation(files, file);
     else {
+        visited_flag(files[file]) = true;
         uint compile_count = 0;
         for (uint child : files[file].children)
-            if (!files[child].need_compile && !visited_flag(files[child]))
+            if (!visited_flag(files[child]))
                 compile_count += check_file_for_compilation(files, child);
         return compile_count;
     }
@@ -188,10 +200,8 @@ static uint check_file_for_compilation(std::span<SourceFile> const& files, uint 
 // Returns true if at least 1 file should be compiled.
 bool DependencyTree::need_compilation() {
     uint compile_count = 0;
-    for (SourceFile& file : files) {
+    for (SourceFile& file : files)
         visited_flag(file) = false;
-        file.need_compile = false;
-    }
     for (uint i : Range(files))
         if (files[i].parents.size() == 0)
             compile_count += check_file_for_compilation(files, i);
