@@ -3,7 +3,7 @@ HEADERS := $(wildcard src/*.hpp) $(wildcard src/**/*.hpp)
 OBJ := $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(SRC)))
 
 ARGS := -std=c++23 -g -Wall
-CC := clang++ ${ARGS}
+CC := g++ ${ARGS}
 
 everything:
 	make main -j 16
@@ -24,5 +24,4 @@ db: main
 	gdb -ex run --args ./livecc src
 
 clean:
-	rm -r build
-	rm src/*.o src/**/*.o livecc
+	rm -r build src/*.o src/**/*.o livecc

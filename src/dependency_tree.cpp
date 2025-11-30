@@ -202,8 +202,11 @@ bool DependencyTree::need_compilation() {
     uint compile_count = 0;
     for (SourceFile& file : files)
         visited_flag(file) = false;
-    for (uint i : Range(files))
-        if (files[i].parents.size() == 0)
+
+    // Visit all files reverse. Reverse because headers
+    // are usually added to the back of the list.
+    for (uint i = files.size(); i-- > 0;)
+        if (!visited_flag(files[i]))
             compile_count += check_file_for_compilation(files, i);
     return compile_count != 0;
 }

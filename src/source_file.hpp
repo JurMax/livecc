@@ -19,6 +19,8 @@ struct SourceType {
         C_PCH,              // Compiled. There can be only 1 C pch
         BARE_INCLUDE,       // Not compiled, only included
         OBJECT,             // Only linked.
+        STATIC_LIBRARY,     // Only linked.
+        SHARED_LIBRARY,     // Copied to the output directory
     };
 
     inline constexpr SourceType(Type type) : type(type) {}
@@ -111,5 +113,8 @@ public:
     }
 
     // remove ".gch"
+    std::string_view filename();
     std::string_view pch_include();
+    // remove "lib" and the extension.
+    std::string_view lib_include();
 };

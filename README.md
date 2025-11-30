@@ -12,6 +12,11 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Imported headers should become header units automatically (maybe add two versions?)
 -- we can see if they're header unist based on "" / <>
 
+- Replace setDLLCallback with just a regular function call
+-- Use a macro to use it only when LIVE_CC is used.
+-- We can do more talking to the compiler using this method.
+-- See if we need livecc to load a dll containing this function or we can ust include it in livecc.
+
 - Add a --keep-alive option, which rebuilds the given target each time there is a change.
 -- Rebuild dependencies: reanalyse dependencies for all changes files, and rebuild the map where applicable
 - Check if clang or livecc changed and recompile if so.
@@ -23,5 +28,9 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Test what happens with missing files and what should happen
 - Support C style pch
 - GCC support by adding an support for -fmodule-mapper: https://gcc.gnu.org/wiki/cxx-modules#CMI_Location.
+
+- Allow specifing any .args file to add the content of that file as arguments.
+-- Treats that as the base directory for any files referenced in there.
+- namespace everything
 
 - More sensible default warning maybe?1

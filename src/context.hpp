@@ -25,9 +25,11 @@ enum class BuildType {
  */
 struct Context {
     struct Settings {
-        fs::path working_directory;
+        std::string output_name = "app";
+        fs::path working_dir = fs::current_path();
+        fs::path build_dir = "build";
+        fs::path output_dir;
         fs::path output_file;
-        fs::path output_directory;
 
         std::string_view compiler = "clang";
         enum { CLANG, GCC } compiler_type = CLANG;
@@ -38,7 +40,9 @@ struct Context {
         bool use_header_units = false;
         bool rebuild_with_O0 = false;
         bool verbose = false;
+        bool clean = false; // delete the build directory before starting.
         bool test = false; // make this a build type that just uses the same files.
+        bool do_compile = true; // if false, stop after making compile_commands.json
 
         std::string build_command;
         std::vector<std::string_view> build_include_dirs;
@@ -87,10 +91,10 @@ struct Context {
         void clear_term() const;
         void print_bar() const;
 
-        std::mutex mutex;
-        std::string task_name;
-        int bar_task_current;
-        int bar_task_total;
-        int term_width;
+        std::mutex mutex = {};
+        std::string task_name = {};
+        int bar_task_current = 0;
+        int bar_task_total = 0;
+        int term_width = 80;
     } log;
 };

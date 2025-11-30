@@ -2,6 +2,7 @@
 
 #include "context.hpp"
 #include "module_mapper_pipe.hpp"
+#include "platform.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -18,15 +19,42 @@ using namespace std::literals;
         SourceType type = HEADER;
         if (++i == path.size()) return {};
         switch (path[i]) {
+        // c, cc, cpp, c++
             case 'c': case 'C':
                 if (++i == path.size()) return {C_UNIT};
                 type = UNIT;
                 break;
+        // h, hh, hpp, h++
             case 'h': case 'H':
                 if (++i == path.size()) return {HEADER};
                 type = HEADER;
                 break;
-            case 'o': case 'O': // o, ob, obj
+        // a
+            case 'a': if (path.substr(i) ==   "a") return {STATIC_LIBRARY}; else return {};
+            case 'A': if (path.substr(i) ==   "A") return {STATIC_LIBRARY}; else return {};
+        // dll
+            case 'd': if (path.substr(i) == "dll") return {SHARED_LIBRARY}; else return {};
+            case 'D': if (path.substr(i) == "DLL") return {SHARED_LIBRARY}; else return {};
+        // so
+            case 's': if (path.substr(i) ==  "so") return {SHARED_LIBRARY}; else return {};
+            case 'S': if (path.substr(i) ==  "SO") return {SHARED_LIBRARY}; else return {};
+        /* .so.0.1 */
+            case '0': case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7': case '8': case '9':
+                for (size_t i = path.size(); i-- > 0;)
+                    switch (path[i]) {
+                        case '0': case '1': case '2': case '3': case '4':
+                        case '5': case '6': case '7': case '8': case '9': case '.':
+                            break;
+                        case 'o':
+                            if (i > 2 && path[--i] == 's' && path[--i] == '.')
+                                return {SHARED_LIBRARY};
+                            return {};
+                        default: return {};
+                    }
+                break;
+        // o, ob, obj
+            case 'o': case 'O':
                 if (++i == path.size()) return {OBJECT};
                 if (path[i] == 'b' || path[i] == 'B') {
                     if (++i == path.size()) return {OBJECT};
@@ -37,6 +65,7 @@ using namespace std::literals;
             default: return {};
         }
 
+        // Parse the rest of header or source file extensions.
         switch (path[i]) {
             default: break;
             case 'h': case 'H': if (++i == path.size()) return {HEADER}; break;
@@ -58,7 +87,7 @@ static fs::path normalise_path(Context::Settings const& settings, const fs::path
     fs::path absolute_path = fs::canonical(path, err);
     if (err)
         return path;
-    fs::path relative_path = fs::relative(path, settings.working_directory, err);
+    fs::path relative_path = fs::relative(path, settings.working_dir, err);
     if (!err && relative_path.native()[0] != '.')
         return relative_path;
     else
@@ -235,90 +264,137 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
     : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(settings, path) : path) {
 
     if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT)
-        compiled_path = settings.output_directory / "system" / source_path;
+        compiled_path = settings.output_dir / "system" / source_path;
     else {
         const char* path = source_path.c_str();
         if (source_path.is_absolute())
             path += source_path.root_path().native().size();
-        compiled_path = settings.output_directory / path;
+        compiled_path = settings.output_dir / path;
     }
 
     switch (type) {
         case SourceType::UNIT:
         case SourceType::C_UNIT:
         case SourceType::MODULE:
-            compiled_path += ".o"; break;
+            compiled_path += ".o";
+            break;
+        case SourceType::HEADER_UNIT:
+        case SourceType::SYSTEM_HEADER_UNIT:
+            compiled_path += ".pcm";
+            break;
+        case SourceType::PCH:
+        case SourceType::C_PCH:
+            compiled_path += ".gch";
+            break;
         case SourceType::HEADER:
         case SourceType::SYSTEM_HEADER:
         case SourceType::BARE_INCLUDE:
         case SourceType::OBJECT:
-            compiled_path += ".timestamp"; break;
-        case SourceType::HEADER_UNIT:
-        case SourceType::SYSTEM_HEADER_UNIT:
-            compiled_path += ".pcm"; break;
-        case SourceType::PCH:
-        case SourceType::C_PCH:
-            compiled_path += ".gch"; break;
+        case SourceType::STATIC_LIBRARY:
+            compiled_path += ".timestamp";
+            break;
+        case SourceType::SHARED_LIBRARY:
+            // This one gets updated later to match the libraries SONAME.
+            compiled_path = settings.build_dir / source_path.filename();
+            break;
     }
 }
 
 ErrorCode SourceFile::read_dependencies(Context const& context) {
     std::error_code err;
 
+    source_time.reset();
+    ErrorCode ret = ErrorCode::OK;
+    switch (type) {
+        case SourceType::UNIT:
+        case SourceType::C_UNIT:
+        case SourceType::MODULE:
+        case SourceType::HEADER:
+        case SourceType::HEADER_UNIT:
+        case SourceType::PCH:
+        case SourceType::C_PCH:
+        case SourceType::BARE_INCLUDE: {
+            // Read the dependencies of anything but the system headers.
+            fs::file_time_type source_write_time = fs::last_write_time(source_path, err);
+            Parser parser(*this);
+            ret = err ? ErrorCode::OPEN_FAILED : parser.parse(context.settings);
+            switch (ret) {
+                case ErrorCode::OK:
+                    source_time = source_write_time;
+                    break;
+                case ErrorCode::OPEN_FAILED:
+                    // Not finding headers is okay, they might be hidden behind a preprocessor.
+                    if (type == SourceType::HEADER || type == SourceType::HEADER_UNIT)
+                        ret = ErrorCode::OK;
+                    else
+                        context.log.error("failed to open file ", source_path);
+                    break;
+                case ErrorCode::BUFFER_TOO_SMALL:
+                    context.log.error("a path or name in ", source_path, " is larger than 4096 characters");
+                    break;
+                default:
+                    context.log.error("parsing error in ", source_path);
+                    break;
+            }
+            break;
+        }
+        case SourceType::SYSTEM_HEADER:
+        case SourceType::SYSTEM_HEADER_UNIT: {
+            // Check the system header write time by going through all the options.
+            for (const std::string_view& dir : context.settings.build_include_dirs) {
+                fs::file_time_type source_write_time = fs::last_write_time(dir / source_path, err);
+                if (!err)
+                    source_time = source_write_time;
+            }
+            for (const fs::path& dir : context.settings.system_include_dirs) {
+                fs::file_time_type source_write_time = fs::last_write_time(dir / source_path, err);
+                if (!err)
+                    source_time = source_write_time;
+            }
+            // Not finding system headers is okay, they might be hidden behind a preprocessor.
+            break;
+        }
+        case SourceType::OBJECT: {
+            fs::file_time_type source_write_time = fs::last_write_time(source_path, err);
+            if (!err) source_time = source_write_time;
+            else ret = ErrorCode::OPEN_FAILED;
+            break;
+        }
+        case SourceType::STATIC_LIBRARY:
+        case SourceType::SHARED_LIBRARY: {
+            fs::file_time_type source_write_time = fs::last_write_time(source_path, err);
+            if (!err)
+                source_time = source_write_time;
+            else {
+                ret = ErrorCode::OPEN_FAILED;
+
+                // Search /usr/lib/ for the library.
+                if (source_path.is_relative()) {
+                    fs::path absolute_path = "/usr/lib" / source_path;
+                    source_write_time = fs::last_write_time(absolute_path, err);
+                    if (!err) {
+                        source_path = absolute_path;
+                        source_time = source_write_time;
+                        ret = ErrorCode::OK;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    // Update the compiled path to match the SONAME of the library.
+    if (type == SourceType::SHARED_LIBRARY)
+        if (DLL dll = DLL::open_local(context.log, source_path.c_str()))
+            compiled_path = context.settings.build_dir / dll.get_soname();
+
     // Get the compiled time.
-    compiled_time.reset();
-    auto full_compiled_path = compiled_path;
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
+    compiled_time.reset();
     if (!err)
         compiled_time = compiled_write_time;
-    else
-        fs::create_directories(compiled_path.parent_path(), err);
 
-    fs::file_time_type source_write_time;
-    if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT) {
-        // Check the system header write time by going through all the options.
-        for (const std::string_view& dir : context.settings.build_include_dirs) {
-            source_write_time = fs::last_write_time(dir / source_path, err);
-            if (!err)
-                return ErrorCode::OK;
-        }
-        for (const fs::path& dir : context.settings.system_include_dirs) {
-            source_write_time = fs::last_write_time(dir / source_path, err);
-            if (!err)
-                return ErrorCode::OK;
-        }
-        // Not finding system headers is okay, they might be hidden behind a preprocessor.
-        return ErrorCode::OK;
-    }
-    else if (type != SourceType::OBJECT) {
-        source_time.reset();
-        source_write_time = fs::last_write_time(source_path, err);
-
-        // Get the dependencies of anything but the system headers.
-        Parser parser(*this);
-        ErrorCode ret = err ? ErrorCode::OPEN_FAILED : parser.parse(context.settings);
-        switch (ret) {
-            case ErrorCode::OK:
-                source_time = source_write_time;
-                break;
-            case ErrorCode::OPEN_FAILED:
-                // Not finding headers is okay, they might be hidden behind a preprocessor.
-                if (type == SourceType::HEADER || type == SourceType::HEADER_UNIT)
-                    ret = ErrorCode::OK;
-                else
-                    context.log.error("failed to open file ", source_path);
-                break;
-            case ErrorCode::BUFFER_TOO_SMALL:
-                context.log.error("a path or name in ", source_path, " is larger than 4096 characters");
-                break;
-            default:
-                context.log.error("parsing error in ", source_path);
-                break;
-        }
-        return ret;
-    }
-
-    return ErrorCode::OK;
+    return ret;
 }
 
 
@@ -337,6 +413,8 @@ bool SourceFile::has_source_changed() {
 std::string SourceFile::get_build_command(Context::Settings const& settings, const fs::path& output_path, bool live_compile) const {
     if (type.compile_to_timestamp())
         return std::format("touch \"{}\"", output_path.native());
+    else if (type == SourceType::SHARED_LIBRARY)
+        return std::format("cp -f \"{}\" \"{}\"", source_path.native(), output_path.native());
 
     std::ostringstream command;
     command << settings.build_command;
@@ -384,6 +462,26 @@ std::string SourceFile::get_build_command(Context::Settings const& settings, con
     return command.str();
 }
 
+std::string_view SourceFile::filename() {
+    std::string_view view{source_path.native()};
+    size_t i = view.rfind('/');
+    if (i != std::string_view::npos)
+        view = view.substr(i + 1);
+    i = view.rfind('\\');
+    if (i != std::string_view::npos)
+        view = view.substr(i + 1);
+    return view;
+}
+
 std::string_view SourceFile::pch_include() {
-    return std::string_view{compiled_path.c_str(), compiled_path.native().size() - 4};
+    std::string_view view{compiled_path.native()};
+    return view.ends_with(".gch"sv) ? view.substr(0, view.size() - 4) : view;
+}
+
+std::string_view SourceFile::lib_include() {
+    std::string_view view{filename()};
+    size_t i = view.rfind('.');
+    if (view.starts_with("lib"s) && i != std::string_view::npos)
+        view = view.substr(3, i - 3);
+    return view;
 }

@@ -147,6 +147,8 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
 
 
 ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
+    std::error_code ec;
+
     // If the output is only a timestamp, just update it.
     // If a file is an include but it doesn't exist don't
     // give an error, but also just note down the time.
@@ -158,7 +160,6 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
 
     std::string build_command = file.get_build_command(context.settings, output_path, live_compile);
     std::optional<ModuleMapperPipe> module_pipe;
-    std::error_code ec;
 
     // Create PCH file.
     if (file.type.is_pch()) {
@@ -219,5 +220,9 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
 }
 
 ErrorCode compile_file(Context const& context, SourceFile& file) {
+    if (!file.compiled_time) {
+        std::error_code ec;
+        fs::create_directories(file.compiled_path.parent_path(), ec);
+    }
     return compile_file(context, file, file.compiled_path, false);
 }

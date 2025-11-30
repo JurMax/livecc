@@ -46,7 +46,7 @@ static void thread_func(Context const* context, SourceFile* file, int input_fd, 
                         return;
                     break;
                 case hash("MODULE-REPO"sv):
-                    if (!write("MODULE-REPO \""sv, context->settings.output_directory.native(), "/module_repo\""sv))
+                    if (!write("MODULE-REPO \""sv, context->settings.output_dir.native(), "/module_repo\""sv))
                         return;
                     break;
                 case hash("MODULE-EXPORT"sv):

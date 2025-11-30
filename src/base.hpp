@@ -1,5 +1,5 @@
 #pragma once
-#include <sys/types.h>
+typedef unsigned uint;
 
 enum class ErrorCode {
     OK,

@@ -1,15 +1,11 @@
 #include "context.hpp"
+#include "platform.hpp"
 
-#include <dlfcn.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
+#ifdef __unix__
+#endif
 
 Context::Logging::Logging() {
-    struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    term_width = w.ws_col;
+    term_width = (int)platform::get_terminal_width();
 }
 
 void Context::Logging::set_task(const std::string_view& task, int task_total) {
