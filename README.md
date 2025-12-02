@@ -6,6 +6,8 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 - Support for unity builds for standalone and shared.
 
+- Maybe add the added directories also as include directories?
+
 - Use the same canonical paths as GCC does in the header/module map, and use , instead of resolving it.
 - Support for importing header files -> merge the header file and the module file somehow:
 -- If --use-header-units is not used, the same file needs to be able to be used as an header if included and as a module if explicitly imported. (prob just treat it as a module header file, doesnt matter if some files have to wait a bit longer before its ready)
@@ -19,7 +21,6 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 - Add a --keep-alive option, which rebuilds the given target each time there is a change.
 -- Rebuild dependencies: reanalyse dependencies for all changes files, and rebuild the map where applicable
-- Check if clang or livecc changed and recompile if so.
 - Fix module support: actually build the two thingies.
 - During live reload: build the normal object file on an extra thread, to allow quicker restart.
 - Add a good help screen, with examples.

@@ -2,10 +2,10 @@
 
 #include "context.hpp"
 
-DLL::DLL( DLL&& other ) : handle(other.handle) {
+DLL::DLL(DLL&& other) : handle(other.handle) {
     other.handle = nullptr;
 }
-DLL& DLL::operator=( DLL&& other ) {
+DLL& DLL::operator=(DLL&& other) {
     close();
     handle = other.handle;
     other.handle = nullptr;
@@ -39,7 +39,6 @@ bool DLL::is_open() const {
     /*static*/ DLL DLL::open_deep(Context::Logging& log, const char* path) {
         return open_dll(log, path, RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
     }
-
 
     void DLL::close() {
         if (handle != nullptr)
@@ -75,12 +74,12 @@ bool DLL::is_open() const {
     }
 
     uint platform::get_terminal_width() {
-        #ifdef __unix__
-            struct winsize w;
-            ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-            return w.ws_col;
-        #else
-            return 80;
-        #endif
+        struct winsize w;
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+        return w.ws_col;
+    }
+#else
+    uint platform::get_terminal_width() {
+        return 80;
     }
 #endif
