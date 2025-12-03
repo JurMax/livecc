@@ -146,7 +146,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
                 case OUTPUT:   settings.output_name = arg; break;
                 case PCH:      files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH); break;
                 case PCH_CPP:  files.emplace_back(arg, SourceType::PCH); break;
-                case RESOURCE: printf("\nRESOURCE %s\n", std::string{arg}.c_str()); files.emplace_back(arg, SourceType::RESOURCE); break;
+                case RESOURCE: files.emplace_back(arg, SourceType::RESOURCE); break;
                 case FLAG:     build_command << arg << ' '; break;
             }
             next_arg_type = INPUT;

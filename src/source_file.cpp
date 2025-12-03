@@ -295,7 +295,7 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
             break;
         case SourceType::SHARED_LIBRARY:
         case SourceType::RESOURCE:
-            // This one gets updated later to match the libraries SONAME.
+            // Shared library gets updated later to match the libraries SONAME.
             compiled_path = settings.build_dir / source_path.filename();
             break;
     }
@@ -389,7 +389,6 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
             break;
         }
         case SourceType::RESOURCE:
-            context.log.info("\nRESRO\n", source_path, compiled_path, (int)type.type);
             return ErrorCode::OK;
     }
 
