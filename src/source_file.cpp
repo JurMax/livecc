@@ -32,9 +32,9 @@ using namespace std::literals;
         // a
             case 'a': if (path.substr(i) ==   "a") return {STATIC_LIBRARY}; else return {};
             case 'A': if (path.substr(i) ==   "A") return {STATIC_LIBRARY}; else return {};
-        // dll
-            case 'd': if (path.substr(i) == "dll") return {SHARED_LIBRARY}; else return {};
-            case 'D': if (path.substr(i) == "DLL") return {SHARED_LIBRARY}; else return {};
+        // // dll
+        //     case 'd': if (path.substr(i) == "dll") return {SHARED_LIBRARY}; else return {};
+        //     case 'D': if (path.substr(i) == "DLL") return {SHARED_LIBRARY}; else return {};
         // so
             case 's': if (path.substr(i) ==  "so") return {SHARED_LIBRARY}; else return {};
             case 'S': if (path.substr(i) ==  "SO") return {SHARED_LIBRARY}; else return {};
@@ -294,6 +294,7 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
             compiled_path += ".timestamp";
             break;
         case SourceType::SHARED_LIBRARY:
+        case SourceType::RESOURCE:
             // This one gets updated later to match the libraries SONAME.
             compiled_path = settings.build_dir / source_path.filename();
             break;
@@ -304,6 +305,7 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
     std::error_code err;
 
     source_time.reset();
+    compiled_time.reset();
     ErrorCode ret = ErrorCode::OK;
     switch (type) {
         case SourceType::UNIT:
@@ -379,18 +381,20 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
                     }
                 }
             }
+
+            // Update the compiled path to match the SONAME of the library.
+            if (type == SourceType::SHARED_LIBRARY)
+                if (DLL dll = DLL::open_local(context.log, source_path.c_str()))
+                    compiled_path = context.settings.build_dir / dll.get_soname();
             break;
         }
+        case SourceType::RESOURCE:
+            context.log.info("\nRESRO\n", source_path, compiled_path, (int)type.type);
+            return ErrorCode::OK;
     }
-
-    // Update the compiled path to match the SONAME of the library.
-    if (type == SourceType::SHARED_LIBRARY)
-        if (DLL dll = DLL::open_local(context.log, source_path.c_str()))
-            compiled_path = context.settings.build_dir / dll.get_soname();
 
     // Get the compiled time.
     auto compiled_write_time = fs::last_write_time(compiled_path, err);
-    compiled_time.reset();
     if (!err)
         compiled_time = compiled_write_time;
 

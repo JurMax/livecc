@@ -20,7 +20,8 @@ struct SourceType {
         BARE_INCLUDE,       // Not compiled, only included
         OBJECT,             // Only linked.
         STATIC_LIBRARY,     // Only linked.
-        SHARED_LIBRARY,     // Copied to the output directory
+        SHARED_LIBRARY,     // Linked & copied to the output directory
+        RESOURCE,           // Copied to the output directory
     };
 
     inline constexpr SourceType(Type type) : type(type) {}
@@ -29,7 +30,11 @@ struct SourceType {
 
     /** Is translation unit */
     inline constexpr bool is_include() const {
-        switch (type) { case UNIT: case C_UNIT: case MODULE: case OBJECT: return false; default: return true; }
+        switch (type) {
+            case HEADER: case HEADER_UNIT: case SYSTEM_HEADER: case SYSTEM_HEADER_UNIT:
+            case PCH: case C_PCH: case BARE_INCLUDE: return true;
+            default: return false;
+        }
     }
     inline constexpr bool imports_modules() const {
         switch (type) { case UNIT: case HEADER_UNIT: case MODULE: return true; default: return false; }

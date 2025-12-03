@@ -77,7 +77,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
     build_command << "-fdiagnostics-color=always -Wpedantic -Wall -Wextra -Winvalid-pch -Wsuggest-override ";
     link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
 
-    enum { INPUT, OUTPUT, PCH, PCH_CPP, FLAG } next_arg_type = INPUT;
+    enum { INPUT, OUTPUT, PCH, PCH_CPP, RESOURCE, FLAG } next_arg_type = INPUT;
     for (size_t i = 0; i < args.size(); ++i) {
         std::string_view arg(args[i]);
 
@@ -109,6 +109,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
             }
             else if (arg == "--pch") next_arg_type = PCH;
             else if (arg == "--c++pch") next_arg_type = PCH_CPP;
+            else if (arg == "--resource") next_arg_type = RESOURCE;
             else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
             else if (arg == "--shared") settings.build_type = BuildType::SHARED;
             else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
@@ -135,27 +136,27 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
             }
         }
         else {
-            if (next_arg_type == INPUT) {
-                if (auto type = SourceType::from_extension(arg))
-                    files.emplace_back(arg, *type);
-                else if (add_source_directory(files, arg) != ErrorCode::OK)
-                    context.log.error("unknown input supplied: ", arg);
+            switch (next_arg_type) {
+                case INPUT:
+                    if (auto type = SourceType::from_extension(arg))
+                        files.emplace_back(arg, *type);
+                    else if (add_source_directory(files, arg) != ErrorCode::OK)
+                        context.log.error("unknown input supplied: ", arg);
+                    break;
+                case OUTPUT:   settings.output_name = arg; break;
+                case PCH:      files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH); break;
+                case PCH_CPP:  files.emplace_back(arg, SourceType::PCH); break;
+                case RESOURCE: printf("\nRESOURCE %s\n", std::string{arg}.c_str()); files.emplace_back(arg, SourceType::RESOURCE); break;
+                case FLAG:     build_command << arg << ' '; break;
             }
-            else if (next_arg_type == PCH)
-                files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH);
-            else if (next_arg_type == PCH_CPP)
-                files.emplace_back(arg, SourceType::PCH);
-            else if (next_arg_type == OUTPUT)
-                settings.output_name = arg;
-            else
-                build_command << arg << ' ';
             next_arg_type = INPUT;
         }
     }
 
     // Set the output directory.
     switch (settings.build_type) {
-        case BuildType::LIVE:       settings.output_dir = settings.build_dir / "live"; break;
+        case BuildType::LIVE:       build_command << "-DLIVECC_LIVE ";
+                                    settings.output_dir = settings.build_dir / "live"; break;
         case BuildType::SHARED:     settings.output_dir = settings.build_dir / "shared"; break;
         case BuildType::STANDALONE: settings.output_dir = settings.build_dir / "standalone"; break;
     }
@@ -182,7 +183,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
         if (settings.build_type == BuildType::STANDALONE)
             context.log.error("tests can't be run in standalone mode!");
         else
-            build_command << "-DLCC_TEST ";
+            build_command << "-DTEST ";
     }
 
     // Turn all explicitly passed headers into header units.

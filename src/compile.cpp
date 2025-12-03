@@ -157,6 +157,13 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
         std::ofstream stream(output_path);
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
+    else if (file.type == SourceType::RESOURCE) {
+        context.log.info("\n\nTEST\n\n ", file.source_path, file.compiled_path);
+        fs::copy_options options =
+            fs::copy_options::update_existing | fs::copy_options::recursive;
+        fs::copy(file.source_path, file.compiled_path, options, ec);
+        return !ec ? ErrorCode::OK : ErrorCode::FAILED;
+    }
 
     std::string build_command = file.get_build_command(context.settings, output_path, live_compile);
     std::optional<ModuleMapperPipe> module_pipe;
