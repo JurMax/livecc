@@ -67,7 +67,8 @@ struct Context {
 
         inline void info(const auto&... args) {
             std::unique_lock<std::mutex> lock(mutex);
-            clear_term();
+            if (!task_name.empty())
+                clear_term();
             (std::cout << ... << args) << '\n';
             if (!task_name.empty())
                 print_bar();

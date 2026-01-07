@@ -49,7 +49,7 @@ struct SourceType {
 
     inline constexpr bool compile_to_timestamp() const {
         switch (type) {
-            case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: case OBJECT: return true;
+            case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: case OBJECT: case STATIC_LIBRARY: return true;
             default: return false;
         }
     };

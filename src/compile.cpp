@@ -180,9 +180,9 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     }
 
     if (context.settings.verbose)
-        context.log.info("Compiling ", file.source_path, " to ", output_path, "(", file.type, ")", " using: ", build_command);
+        context.log.info("Compiling ", file.source_path, " to ", output_path, " (", file.type, ")", " using: ", build_command);
     else
-        context.log.info("Compiling ", file.source_path, " to ", output_path);
+        context.log.info("Compiling ", file.source_path);
 
     build_command += " 2>&1";
 

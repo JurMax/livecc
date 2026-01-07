@@ -121,6 +121,7 @@ ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::
             else if (arg == "--no-header-units") settings.use_header_units = false;
             else if (arg.starts_with("-std=c++")) settings.cpp_version = arg;
             else if (arg.starts_with("-std=c")) settings.c_version = arg;
+            else if (arg.starts_with("-std=gnu")) settings.c_version = arg;
             else if (arg.starts_with("-fuse-ld=")) {
                 link_arguments << arg << ' ';
                 settings.custom_linker_set = true;
@@ -345,6 +346,8 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
             case SourceType::OBJECT:
             case SourceType::STATIC_LIBRARY:
                 link_command << ' ' << file.source_path; break;
+                // link_command << " -static -l:"sv << file.source_path;
+                break;
             case SourceType::SHARED_LIBRARY:
                 if (!added_shared_library) {
                     added_shared_library = true;
@@ -373,7 +376,8 @@ ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) 
 }
 
 struct Runtime;
-static Runtime* runtime;
+static Runtime* runtime_instance;
+
 struct Runtime {
 private:
     Context const& context;
@@ -385,11 +389,10 @@ private:
     std::vector<DLL> loaded_dlls;
     std::vector<fs::path> temporary_files;
 
-    static void callback() { runtime->update(); }
-
 public:
     Runtime( Context const& context, std::span<SourceFile> files)
         : context(context), files(files) {
+        runtime_instance = this;
 
         // Open the created shared library.
         this->main_dll = DLL::open_global(context.log, context.settings.output_file.c_str());
@@ -400,13 +403,15 @@ public:
                 return;
             }
 
-            set_callback_func_t* set_callback = (set_callback_func_t*)this->main_dll.symbol("setDLLCallback");
-            if (set_callback == nullptr)
-                context.log.info("no setDLLCallback() found, so we can't check for file changes!");
-            else {
-                runtime = this;
-                (*set_callback)(callback);
+            using Func = void (*)();
+            Func* callback = (Func*)this->main_dll.symbol("livecc_callback");
+            if (callback != nullptr) {
+                *(Func*)this->main_dll.symbol("livecc_callback") = +[] {
+                    runtime_instance->update();
+                };
             }
+            else
+                context.log.info("no livecc_callback symbol found, so we can't check for file changes");
         }
     }
 
@@ -464,12 +469,12 @@ private:
         }
     }
 
+public:
     void update() {
         path_index = (path_index + 1) % files.size();
 
         SourceFile& file = files[path_index];
         if (file.type == SourceType::UNIT && file.has_source_changed()) {
-            context.log.info(file.source_path, " changed!");
             // TODO: only recompile the actual function that has been changed.
 
             fs::path output_path = context.settings.output_dir / "tmp"
@@ -491,7 +496,6 @@ private:
         }
     }
 };
-
 
 void run_tests(Context const& context) {
     // Open the created shared library.
