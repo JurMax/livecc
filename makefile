@@ -2,7 +2,7 @@ SRC := $(wildcard src/*.cpp) $(wildcard src/**/*.cpp)
 HEADERS := $(wildcard src/*.hpp) $(wildcard src/**/*.hpp)
 OBJ := $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(SRC)))
 
-ARGS := -std=c++23 -g -Wall
+ARGS := -std=c++23 -g -Wall -Wno-dangling-else
 CC := g++ ${ARGS}
 
 everything:

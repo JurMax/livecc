@@ -16,6 +16,7 @@ static constexpr inline ulong hash(auto iterable) {
     return hash;
 }
 
+using namespace livecc;
 
 // SOURCES:
 // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2020/p1184r2.pdf

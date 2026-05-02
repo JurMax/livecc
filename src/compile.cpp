@@ -1,74 +1,79 @@
 #include "compile.hpp"
 #include "module_mapper_pipe.hpp"
-#include "thread_pool.hpp"
+#include "util/thread_pool.hpp"
 
 #include <algorithm>
 #include <csignal>
 #include <fstream>
 
 
-/**
- * Compile te files that need to be compiled.
- */
-struct Compiler {
-    struct FileInfo {
-        bool failed = false;
-        std::atomic<uint> compiled_parents = 0;
+namespace livecc {
+    /**
+     * Compile te files that need to be compiled.
+     */
+    struct Compiler {
+        struct FileInfo {
+            bool failed = false;
+            std::atomic<uint> compiled_parents = 0;
+        };
+
+        Context const& context;
+        std::span<SourceFile> files;
+        std::span<FileInfo> info;
+        ThreadPool pool;
+
+        void add_to_compile_queue(uint file) {
+            if (files[file].need_compile()) {
+                pool.enqueue([this, file] -> ErrorCode {
+                    ErrorCode err = compile_file(context, files[file]);
+                    if (err == ErrorCode::OK)
+                        mark_compiled(files[file]);
+                    else
+                        info[file].failed = true;
+                    if (!files[file].type.compile_to_timestamp())
+                        context.log.step_task();
+                    return err;
+                });
+            }
+            else // We don't need to compile this file, so add its dependencies to the queue.
+                mark_compiled(files[file]);
+        }
+
+        void mark_compiled(SourceFile& file) {
+            for (uint child : file.children)
+                if (++info[child].compiled_parents == files[child].parents.size())
+                    add_to_compile_queue(child);
+        }
     };
 
-    Context const& context;
-    std::span<SourceFile> files;
-    std::span<FileInfo> info;
-    ThreadPool pool;
 
-    void add_to_compile_queue(uint file) {
-        if (files[file].need_compile()) {
-            pool.enqueue([this, file] -> ErrorCode {
-                ErrorCode err = compile_file(context, files[file]);
-                if (err == ErrorCode::OK)
-                    mark_compiled(files[file]);
-                else
-                    info[file].failed = true;
-                if (!files[file].type.compile_to_timestamp())
-                    context.log.step_task();
-                return err;
-            });
+    /** Return true if the given depends (indirectly) on the given dependency. Is slow */
+    static bool depends_on(std::span<const SourceFile> files, uint file, uint dependency) {
+        for (uint child : files[dependency].children) {
+            if (child == file) return true;
+            else if (depends_on(files, file, child)) return true;
         }
-        else // We don't need to compile this file, so add its dependencies to the queue.
-            mark_compiled(files[file]);
+        return false;
     }
 
-    void mark_compiled(SourceFile& file) {
-        for (uint child : file.children)
-            if (++info[child].compiled_parents == files[child].parents.size())
-                add_to_compile_queue(child);
+    static bool depends_on_print(Context::Logging& log, std::span<const SourceFile> files, uint file, uint dependency) {
+        for (uint child : files[dependency].children) {
+            if (child == file) {
+                log.print(files[child].source_path);
+                return true;
+            }
+            else if (depends_on_print(log, files, file, child)) {
+                log.print(" -> ", files[child].source_path);
+                return true;
+            }
+        }
+        return false;
     }
-};
-
-/** Return true if the given depends (indirectly) on the given dependency. Is slow */
-static bool depends_on(std::span<const SourceFile> files, uint file, uint dependency) {
-    for (uint child : files[dependency].children) {
-        if (child == file) return true;
-        else if (depends_on(files, file, child)) return true;
-    }
-    return false;
 }
 
-static bool depends_on_print(Context::Logging& log, std::span<const SourceFile> files, uint file, uint dependency) {
-    for (uint child : files[dependency].children) {
-        if (child == file) {
-            log.print(files[child].source_path);
-            return true;
-        }
-        else if (depends_on_print(log, files, file, child)) {
-            log.print(" -> ", files[child].source_path);
-            return true;
-        }
-    }
-    return false;
-}
+using namespace livecc;
 
-ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
+ErrorCode livecc::compile_all(Context const& context, std::span<SourceFile> files) {
     size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
         return f.need_compile() && !f.type.compile_to_timestamp();
     });
@@ -145,8 +150,7 @@ ErrorCode compile_all(Context const& context, std::span<SourceFile> files) {
     return ErrorCode::OK;
 }
 
-
-ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_compile) {
+ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::path const& output_path, bool live_recompile) {
     std::error_code ec;
 
     // If the output is only a timestamp, just update it.
@@ -164,7 +168,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
         return !ec ? ErrorCode::OK : ErrorCode::FAILED;
     }
 
-    std::string build_command = file.get_build_command(context.settings, output_path, live_compile);
+    std::string build_command = file.get_build_command(context.settings, output_path, live_recompile);
     std::optional<ModuleMapperPipe> module_pipe;
 
     // Create PCH file.
@@ -225,7 +229,7 @@ ErrorCode compile_file(Context const& context, SourceFile& file, fs::path const&
     }
 }
 
-ErrorCode compile_file(Context const& context, SourceFile& file) {
+ErrorCode livecc::compile_file(Context const& context, SourceFile& file) {
     if (!file.compiled_time) {
         std::error_code ec;
         fs::create_directories(file.compiled_path.parent_path(), ec);

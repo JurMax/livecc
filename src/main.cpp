@@ -12,7 +12,8 @@
 
 #include "dependency_tree.hpp"
 #include "compile.hpp"
-#include "thread_pool.hpp"
+#include "util/base.hpp"
+#include "util/thread_pool.hpp"
 
 #include <charconv>
 #include <cstring>
@@ -36,537 +37,564 @@
 // https://maskray.me/blog/2021-09-19-all-about-procedure-linkage-table
 // https://www.qnx.com/developers/docs/7.0.0/index.html#com.qnx.doc.neutrino.prog/topic/devel_Lazy_binding.html !
 
-// TODO: use inotify.
+namespace livecc {
+    namespace fs = std::filesystem;
+    using namespace std::literals;
 
-namespace fs = std::filesystem;
-using namespace std::literals;
-
-typedef void dll_callback_func_t(void);
-typedef int set_callback_func_t(dll_callback_func_t*);
+    typedef void dll_callback_func_t(void);
+    typedef int set_callback_func_t(dll_callback_func_t*);
 
 
-/**
- * Add all the source files in a given directory to the build system.
- * Returns true if the given path was actually a directory.
- */
-ErrorCode add_source_directory(std::vector<InputFile>& files, std::string_view const& dir_path) {
-    std::error_code err;
-    for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
-        if (auto type = SourceType::from_extension(dir_entry.path().native()))
-            files.emplace_back(dir_entry.path(), *type);
-    return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
-}
+    /**
+     * Add all the source files in a given directory to the build system.
+     * Returns true if the given path was actually a directory.
+     */
+    ErrorCode add_source_directory(std::vector<InputFile>& files, std::string_view const& dir_path) {
+        std::error_code err;
+        // TODO only add .o files if there are no source files in the directory.
+        for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
+            if (auto type = SourceType::from_extension(dir_entry.path().native()))
+                files.emplace_back(dir_entry.path(), *type);
+        return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
+    }
 
-// Returns true if all the arguments are valid.
-ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::span<std::string> args) {
-    std::error_code err;
-    Context::Settings& settings = context.settings;
-    std::ostringstream build_command;
-    std::ostringstream link_arguments;
+    // Returns true if all the arguments are valid.
+    ErrorCode parse_arguments(Context& context, std::vector<InputFile>& files, std::span<std::string> args) {
+        std::error_code err;
+        Context::Settings& settings = context.settings;
+        std::ostringstream build_command;
+        std::ostringstream link_arguments;
 
-    if (const char* env_compiler = std::getenv("CXX"))
-        settings.compiler = env_compiler;
-    else if (const char* env_compiler = std::getenv("CC"))
-        settings.compiler = env_compiler;
-    if (settings.compiler.contains("gcc")
-        || (settings.compiler.contains("g++")
-            && !settings.compiler.contains("clang++")))
-        settings.compiler_type = Context::Settings::GCC;
+        if (const char* env_compiler = std::getenv("CXX"))
+            settings.compiler = env_compiler;
+        else if (const char* env_compiler = std::getenv("CC"))
+            settings.compiler = env_compiler;
+        if (settings.compiler.contains("gcc")
+            || (settings.compiler.contains("g++")
+                && !settings.compiler.contains("clang++")))
+            settings.compiler_type = Context::Settings::GCC;
 
-    build_command << settings.compiler << ' ';
-    build_command << "-fdiagnostics-color=always -Wpedantic -Wall -Wextra -Winvalid-pch -Wsuggest-override ";
-    link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
+        build_command << settings.compiler << ' ';
+        build_command << "-fdiagnostics-color=always -Wall -Wextra -Wpedantic -Wconversion -Winvalid-pch -Wsuggest-override ";
+        link_arguments << "-lm -lc++ -lstdc++ -lstdc++exp ";
 
-    enum { INPUT, OUTPUT, PCH, PCH_CPP, RESOURCE, FLAG } next_arg_type = INPUT;
-    for (size_t i = 0; i < args.size(); ++i) {
-        std::string_view arg(args[i]);
+        enum { INPUT, OUTPUT, PCH, PCH_CPP, RESOURCE, FLAG } next_arg_type = INPUT;
+        for (size_t i = 0; i < args.size(); ++i) {
+            std::string_view arg(args[i]);
 
-        if (arg[0] == '-') {
-            if (arg[1] == 'o') {
-                // Get the output file.
-                if (arg.length() == 2)
-                    next_arg_type = OUTPUT;
-                else
-                    settings.output_name = arg.substr(2);
-            }
-            else if (arg[1] == 'j') {
-                // Set the number of parallel threads to use.
-                uint job_count;
-                std::string_view value = arg.length() == 2 ? args[++i] : arg.substr(2);
-                if (std::from_chars(value.begin(), value.end(), job_count).ec == std::errc{})
-                    settings.job_count = job_count;
-                else context.log.error("invalid job count value: ", value);
-            }
-            else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=") || arg.starts_with("-Wl")) {
-                link_arguments << arg << ' ';
-            }
-            else if (arg[1] == 'I') {
-                std::string_view dir = arg.substr(2);
-                if (dir[0] == '"' && dir[dir.length() - 1] == '"')
-                    dir = dir.substr(1, dir.length() - 2);
-                settings.build_include_dirs.push_back(dir);
-                build_command << "-I\"" << dir << "\" ";
-            }
-            else if (arg == "--pch") next_arg_type = PCH;
-            else if (arg == "--c++pch") next_arg_type = PCH_CPP;
-            else if (arg == "--resource") next_arg_type = RESOURCE;
-            else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
-            else if (arg == "--shared") settings.build_type = BuildType::SHARED;
-            else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
-            else if (arg == "--verbose") settings.verbose = true;
-            else if (arg == "--test") settings.test = true;
-            else if (arg == "--clean") { settings.clean = true; settings.do_compile = false; }
-            else if (arg == "--start-clean") settings.clean = true;
-            else if (arg == "--header-units") settings.use_header_units = true;
-            else if (arg == "--no-header-units") settings.use_header_units = false;
-            else if (arg.starts_with("-std=c++")) settings.cpp_version = arg;
-            else if (arg.starts_with("-std=c")) settings.c_version = arg;
-            else if (arg.starts_with("-std=gnu")) settings.c_version = arg;
-            else if (arg.starts_with("-fuse-ld=")) {
-                link_arguments << arg << ' ';
-                settings.custom_linker_set = true;
+            if (arg[0] == '-') {
+                if (arg[1] == 'o') {
+                    // Get the output file.
+                    if (arg.length() == 2)
+                        next_arg_type = OUTPUT;
+                    else
+                        settings.output_name = arg.substr(2);
+                }
+                else if (arg[1] == 'j') {
+                    // Set the number of parallel threads to use.
+                    uint job_count;
+                    std::string_view value = arg.length() == 2 ? args[++i] : arg.substr(2);
+                    if (std::from_chars(value.begin(), value.end(), job_count).ec == std::errc{})
+                        settings.job_count = job_count;
+                    else context.log.error("invalid job count value: ", value);
+                }
+                else if (arg[1] == 'l' || arg[1] == 'L' || arg.starts_with("-fuse-ld=") || arg.starts_with("-Wl")) {
+                    link_arguments << arg << ' ';
+                }
+                else if (arg[1] == 'I') {
+                    std::string_view dir = arg.substr(2);
+                    if (dir[0] == '"' && dir[dir.length() - 1] == '"')
+                        dir = dir.substr(1, dir.length() - 2);
+                    settings.build_include_dirs.push_back(dir);
+                    build_command << "-I\"" << dir << "\" ";
+                }
+                else if (arg == "--pch") next_arg_type = PCH;
+                else if (arg == "--c++pch") next_arg_type = PCH_CPP;
+                else if (arg == "--resource") next_arg_type = RESOURCE;
+                else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
+                else if (arg == "--shared") settings.build_type = BuildType::SHARED;
+                else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
+                else if (arg == "--verbose") settings.verbose = true;
+                else if (arg == "--test") settings.test = true;
+                else if (arg == "--clean") { settings.clean = true; settings.do_compile = false; }
+                else if (arg == "--start-clean") settings.clean = true;
+                else if (arg == "--header-units") settings.use_header_units = true;
+                else if (arg == "--no-header-units") settings.use_header_units = false;
+                else if (arg.starts_with("-std=c++")) settings.cpp_version = arg;
+                else if (arg.starts_with("-std=c")) settings.c_version = arg;
+                else if (arg.starts_with("-std=gnu")) settings.c_version = arg;
+                else if (arg.starts_with("-fuse-ld=")) {
+                    link_arguments << arg << ' ';
+                    settings.custom_linker_set = true;
+                }
+                else {
+                    build_command << arg << ' ';
+
+                    // The next argument is part of this flag, so it's not a file.
+                    // TODO: handle all the arguments in which you specify an option.
+                    // like: -MD, --param, etc.
+                    if (arg.length() == 2 || (arg.starts_with("-include") && arg.size() == 8))
+                        next_arg_type = FLAG;
+                }
             }
             else {
-                build_command << arg << ' ';
-
-                // The next argument is part of this flag, so it's not a file.
-                // TODO: handle all the arguments in which you specify an option.
-                // like: -MD, --param, etc.
-                if (arg.length() == 2 || (arg.starts_with("-include") && arg.size() == 8))
-                    next_arg_type = FLAG;
-            }
-        }
-        else {
-            switch (next_arg_type) {
-                case INPUT:
-                    if (auto type = SourceType::from_extension(arg))
-                        files.emplace_back(arg, *type);
-                    else if (add_source_directory(files, arg) != ErrorCode::OK)
-                        context.log.error("unknown input supplied: ", arg);
-                    break;
-                case OUTPUT:   settings.output_name = arg; break;
-                case PCH:      files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH); break;
-                case PCH_CPP:  files.emplace_back(arg, SourceType::PCH); break;
-                case RESOURCE: files.emplace_back(arg, SourceType::RESOURCE); break;
-                case FLAG:     build_command << arg << ' '; break;
-            }
-            next_arg_type = INPUT;
-        }
-    }
-
-    // Set the output directory.
-    switch (settings.build_type) {
-        case BuildType::LIVE:       build_command << "-DLIVECC_LIVE ";
-                                    settings.output_dir = settings.build_dir / "live"; break;
-        case BuildType::SHARED:     settings.output_dir = settings.build_dir / "shared"; break;
-        case BuildType::STANDALONE: settings.output_dir = settings.build_dir / "standalone"; break;
-    }
-
-    // Set the output file path.
-    for (char& c : settings.output_name) if (c == '/') c = '_';
-    std::string output_filename;
-    switch (settings.build_type) {
-        case BuildType::LIVE:   output_filename = "lib" + settings.output_name + "_live.a"; break;
-        case BuildType::SHARED: output_filename = "lib" + settings.output_name + ".a"; break;
-        case BuildType::STANDALONE: output_filename = settings.output_name; break;
-    }
-    settings.output_file = settings.build_dir / output_filename;
-
-    if (settings.build_type == BuildType::LIVE || settings.build_type == BuildType::SHARED) {
-        build_command << "-fPIC ";
-        link_arguments << "-shared ";
-    }
-    // if (context.build_type == LIVE)
-        // build_command << "-fno-inline ";// -fno-ipa-sra";
-    // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-
-    if (settings.test) {
-        if (settings.build_type == BuildType::STANDALONE)
-            context.log.error("tests can't be run in standalone mode!");
-        else
-            build_command << "-DTEST ";
-    }
-
-    // Turn all explicitly passed headers into header units.
-    if (settings.use_header_units)
-        for (InputFile& file : files)
-            if (file.type == SourceType::HEADER)
-                file.type = SourceType::HEADER_UNIT;
-
-    settings.build_command = build_command.str();
-    settings.link_arguments = link_arguments.str();
-    return ErrorCode::OK;
-}
-
-
-bool have_build_args_changed(Context::Settings const& settings) {
-    // TODO: check if the compiler  version updated by checking
-    // if their file changes is higher than command.txt
-
-    std::vector<char> build_command;
-    build_command.reserve(settings.build_command.size()
-        + settings.cpp_version.size() + settings.c_version.size() + 2);
-    build_command.append_range(settings.build_command);
-    build_command.append_range(settings.cpp_version);
-    build_command.push_back(' ');
-    build_command.append_range(settings.c_version);
-    build_command.push_back(' ');
-
-    // Read build args from file.
-    fs::path command_file = settings.output_dir / "command.txt";
-    if (FILE* f = fopen(command_file.c_str(), "rb")) {
-        char buff[256];
-        bool changed = false;
-        size_t count, i = 0;
-        while ((count = fread(buff, 1, sizeof(buff), f)))
-            for (size_t j = 0; j != count; ++j, ++i)
-                if (i == build_command.size() || buff[j] != build_command[i]) {
-                    changed = true;
-                    goto stop;
+                switch (next_arg_type) {
+                    case INPUT:
+                        if (auto type = SourceType::from_extension(arg))
+                            files.emplace_back(arg, *type);
+                        else if (add_source_directory(files, arg) != ErrorCode::OK)
+                            context.log.error("unknown input supplied: ", arg);
+                        break;
+                    case OUTPUT:   settings.output_name = arg; break;
+                    case PCH:      files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH); break;
+                    case PCH_CPP:  files.emplace_back(arg, SourceType::PCH); break;
+                    case RESOURCE: files.emplace_back(arg, SourceType::RESOURCE); break;
+                    case FLAG:     build_command << arg << ' '; break;
                 }
-        if (i != build_command.size())
-            changed = true;
-    stop:
-        fclose(f);
-        if (!changed)
-            return false;
-    }
-
-    // Write the new build file.
-    if (FILE* f = fopen(command_file.c_str(), "wb")) {
-        fwrite(build_command.data(), 1, build_command.size(), f);
-        fclose(f);
-    }
-
-    return true;
-}
-
-ErrorCode get_system_include_dirs(Context& context) {
-    // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
-    char buf[4096];
-    std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.settings.compiler);
-    FILE* pipe = popen(command.c_str(), "r");
-    FILE* mold_pipe = context.settings.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
-    if (pipe == nullptr) {
-        context.log.error("couldn't find ", context.settings.compiler, ". is it in the path?");
-        return ErrorCode::OPEN_FAILED;
-    }
-
-    context.settings.system_include_dirs.clear();
-    while (fgets(buf, sizeof(buf), pipe) != nullptr) {
-        if (buf[0] == ' ' && buf[1] == '/') {
-            size_t len = 2;
-            while (buf[len] != '\n' && buf[len] != '\0') ++len;
-            buf[len] = '\0';
-            context.settings.system_include_dirs.push_back(buf + 1);
-        }
-    }
-
-    // Check if mold exists, and use it as the default linker if it does.
-    if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
-        context.settings.link_arguments += "-fuse-ld=mold ";
-    int err = pclose(pipe);
-    if (err != 0) {
-        context.log.error("compiler returned with error code ", err);
-        return ErrorCode::FAILED;
-    }
-    else return ErrorCode::OK;
-}
-
-void update_compile_commands(Context::Settings const& settings, std::span<SourceFile> files) {
-    // If a file was not compiled before, we need to recreate the compile_commands.json
-    bool create_compile_commands = false;
-    for (SourceFile& file : files)
-        if (!file.compiled_time && !file.type.is_include()) {
-            create_compile_commands = true;
-            break;
-        }
-
-    // If the build args changed, delete all the compiled files so they have to be recompiled.
-    if (have_build_args_changed(settings)) {
-        create_compile_commands = true;
-        std::error_code err;
-        for (SourceFile& file : files) {
-            fs::remove(file.compiled_path, err);
-            file.compiled_time.reset();
-        }
-    }
-
-    if (create_compile_commands) {
-        // TODO: maybe do this after compilation. Then you dont need to update
-        // compile_path separately, and you also have the modules present.
-        std::ofstream compile_commands("compile_commands.json");
-        if (!compile_commands.is_open()) return;
-        std::string dir_string = "\t\t\"directory\": \"" + settings.working_dir.native() + "\",\n";
-        compile_commands << "[\n";
-
-        bool first = true;
-        for (SourceFile& file : files) {
-            if (file.type.is_include())
-                continue;
-            if (!first) compile_commands << ",\n";
-            else first = false;
-            compile_commands << "\t{\n";
-            compile_commands << dir_string;
-            compile_commands << "\t\t\"command\": \"";
-            // TODO: dont use the full build command, its way too big
-            std::string command = file.get_build_command(settings);
-            for (char c : command) {
-                if (c == '"')
-                    compile_commands.put('\\');
-                compile_commands.put(c);
+                next_arg_type = INPUT;
             }
-            compile_commands << "\",\n";
-            compile_commands << "\t\t\"file\": \""
-                << file.source_path.native() << "\"\n";
-            compile_commands << "\t}";
         }
-        compile_commands << "\n]\n";
+
+        // Set the output directory.
+        switch (settings.build_type) {
+            case BuildType::LIVE:       build_command << "-DLIVECC_LIVE ";
+                                        settings.output_dir = settings.build_dir / "live"; break;
+            case BuildType::SHARED:     settings.output_dir = settings.build_dir / "shared"; break;
+            case BuildType::STANDALONE: settings.output_dir = settings.build_dir / "standalone"; break;
+        }
+
+        // Set the output file path.
+        for (char& c : settings.output_name) if (c == '/') c = '_';
+        std::string output_filename;
+        switch (settings.build_type) {
+            case BuildType::LIVE:   output_filename = "lib" + settings.output_name + "_live.a"; break;
+            case BuildType::SHARED: output_filename = "lib" + settings.output_name + ".a"; break;
+            case BuildType::STANDALONE: output_filename = settings.output_name; break;
+        }
+        settings.output_file = settings.build_dir / output_filename;
+
+        if (settings.build_type == BuildType::LIVE || settings.build_type == BuildType::SHARED) {
+            build_command << "-fPIC ";
+            link_arguments << "-shared ";
+        }
+        // if (context.build_type == LIVE)
+            // build_command << "-fno-inline ";// -fno-ipa-sra";
+        // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
+
+        if (settings.test) {
+            if (settings.build_type == BuildType::STANDALONE)
+                context.log.error("tests can't be run in standalone mode!");
+            else
+                build_command << "-DTEST ";
+        }
+
+        // Turn all explicitly passed headers into header units.
+        if (settings.use_header_units)
+            for (InputFile& file : files)
+                if (file.type == SourceType::HEADER)
+                    file.type = SourceType::HEADER_UNIT;
+
+        settings.build_command = build_command.str();
+        settings.link_arguments = link_arguments.str();
+        return ErrorCode::OK;
     }
-}
 
-ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) {
-    if (compile_all(context, files) != ErrorCode::OK)
-        return ErrorCode::FAILED;
 
-    // link all the files into one shared library.
-    bool added_shared_library = false;
-    std::ostringstream link_command;
-    link_command << context.settings.build_command;
-    link_command << context.settings.link_arguments;
-    if (context.settings.build_type != BuildType::STANDALONE)
-        link_command << "-Wl,-z,defs "sv; // Make sure that all symbols are resolved.
-    link_command << "-o "sv << context.settings.output_file;
-    for (SourceFile& file : files)
-        switch (file.type) {
-            case SourceType::UNIT:
-            case SourceType::C_UNIT:
-            case SourceType::MODULE:
-                link_command << ' ' << file.compiled_path; break;
-            case SourceType::OBJECT:
-            case SourceType::STATIC_LIBRARY:
-                link_command << ' ' << file.source_path; break;
-                // link_command << " -static -l:"sv << file.source_path;
+    bool have_build_args_changed(Context::Settings const& settings) {
+        // TODO: check if the compiler  version updated by checking
+        // if their file changes is higher than command.txt
+
+        std::vector<char> build_command;
+        build_command.reserve(settings.build_command.size()
+            + settings.cpp_version.size() + settings.c_version.size() + 2);
+        build_command.append_range(settings.build_command);
+        build_command.append_range(settings.cpp_version);
+        build_command.push_back(' ');
+        build_command.append_range(settings.c_version);
+        build_command.push_back(' ');
+
+        // Read build args from file.
+        fs::path command_file = settings.output_dir / "command.txt";
+        if (FILE* f = fopen(command_file.c_str(), "rb")) {
+            char buff[256];
+            bool changed = false;
+            size_t count, i = 0;
+            while ((count = fread(buff, 1, sizeof(buff), f)))
+                for (size_t j = 0; j != count; ++j, ++i)
+                    if (i == build_command.size() || buff[j] != build_command[i]) {
+                        changed = true;
+                        goto stop;
+                    }
+            if (i != build_command.size())
+                changed = true;
+        stop:
+            fclose(f);
+            if (!changed)
+                return false;
+        }
+
+        // Write the new build file.
+        if (FILE* f = fopen(command_file.c_str(), "wb")) {
+            fwrite(build_command.data(), 1, build_command.size(), f);
+            fclose(f);
+        }
+
+        return true;
+    }
+
+    ErrorCode get_system_include_dirs(Context& context) {
+        // TODO: maybe cache this, only check if the compiler exe file write time changes on startup.
+        char buf[4096];
+        std::string command = std::format("echo | {} -xc++ -E -v - 2>&1 >/dev/null", context.settings.compiler);
+        FILE* pipe = popen(command.c_str(), "r");
+        FILE* mold_pipe = context.settings.custom_linker_set ? nullptr : popen("mold -v &>/dev/null", "r");
+        if (pipe == nullptr) {
+            context.log.error("couldn't find ", context.settings.compiler, ". is it in the path?");
+            return ErrorCode::OPEN_FAILED;
+        }
+
+        context.settings.system_include_dirs.clear();
+        while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+            if (buf[0] == ' ' && buf[1] == '/') {
+                size_t len = 2;
+                while (buf[len] != '\n' && buf[len] != '\0') ++len;
+                buf[len] = '\0';
+                context.settings.system_include_dirs.push_back(buf + 1);
+            }
+        }
+
+        // Check if mold exists, and use it as the default linker if it does.
+        if (mold_pipe != nullptr && pclose(mold_pipe) == 0)
+            context.settings.link_arguments += "-fuse-ld=mold ";
+        int err = pclose(pipe);
+        if (err != 0) {
+            context.log.error("compiler returned with error code ", err);
+            return ErrorCode::FAILED;
+        }
+        else return ErrorCode::OK;
+    }
+
+    void update_compile_commands(Context::Settings const& settings, std::span<SourceFile> files) {
+        // If a file was not compiled before, we need to recreate the compile_commands.json
+        bool create_compile_commands = false;
+        for (SourceFile& file : files)
+            if (!file.compiled_time && !file.type.is_include()) {
+                create_compile_commands = true;
                 break;
-            case SourceType::SHARED_LIBRARY:
-                if (!added_shared_library) {
-                    added_shared_library = true;
-                    // Look for shared libraries in the same directory.
-                    link_command << " -Wl,-rpath,'$ORIGIN'"sv;
-                    link_command << " -L" << context.settings.build_dir;
+            }
+
+        // If the build args changed, delete all the compiled files so they have to be recompiled.
+        if (have_build_args_changed(settings)) {
+            create_compile_commands = true;
+            std::error_code err;
+            for (SourceFile& file : files) {
+                fs::remove(file.compiled_path, err);
+                file.compiled_time.reset();
+            }
+        }
+
+        if (create_compile_commands) {
+            // TODO: maybe do this after compilation. Then you dont need to update
+            // compile_path separately, and you also have the modules present.
+            std::ofstream compile_commands("compile_commands.json");
+            if (!compile_commands.is_open()) return;
+            std::string dir_string = "\t\t\"directory\": \"" + settings.working_dir.native() + "\",\n";
+            compile_commands << "[\n";
+
+            bool first = true;
+            for (SourceFile& file : files) {
+                if (file.type.is_include())
+                    continue;
+                if (!first) compile_commands << ",\n";
+                else first = false;
+                compile_commands << "\t{\n";
+                compile_commands << dir_string;
+                compile_commands << "\t\t\"command\": \"";
+                // TODO: dont use the full build command, its way too big
+                std::string command = file.get_build_command(settings);
+                for (char c : command) {
+                    if (c == '"')
+                        compile_commands.put('\\');
+                    compile_commands.put(c);
                 }
-                link_command << " -l:"sv << file.compiled_path.filename();
-            default: break;
+                compile_commands << "\",\n";
+                compile_commands << "\t\t\"file\": \""
+                    << file.source_path.native() << "\"\n";
+                compile_commands << "\t}";
+            }
+            compile_commands << "\n]\n";
         }
-    link_command << '\0';
-
-    context.log.info("Linking sources together...");
-    // context.log.info(link_command.str());
-
-    if (context.settings.verbose)
-        context.log.info(link_command.view());
-
-    if (int err = system(link_command.view().data())) {
-        context.log.error("error linking to ", context.settings.output_file, ": ", err);
-        return ErrorCode::FAILED;
     }
 
-    context.log.info("");
-    return ErrorCode::OK;
-}
+    ErrorCode compile_and_link(Context const& context, std::span<SourceFile> files) {
+        if (compile_all(context, files) != ErrorCode::OK)
+            return ErrorCode::FAILED;
 
-struct Runtime;
-static Runtime* runtime_instance;
+        // link all the files into one shared library.
+        bool added_shared_library = false;
+        std::ostringstream link_command;
+        link_command << context.settings.build_command;
+        link_command << context.settings.link_arguments;
+        if (context.settings.build_type != BuildType::STANDALONE)
+            link_command << "-Wl,-z,defs "sv; // Make sure that all symbols are resolved.
+        link_command << "-o "sv << context.settings.output_file;
+        for (SourceFile& file : files)
+            switch (file.type) {
+                case SourceType::UNIT:
+                case SourceType::C_UNIT:
+                case SourceType::MODULE:
+                    link_command << ' ' << file.compiled_path; break;
+                case SourceType::OBJECT:
+                case SourceType::STATIC_LIBRARY:
+                    link_command << ' ' << file.source_path; break;
+                    // link_command << " -static -l:"sv << file.source_path;
+                    break;
+                case SourceType::SHARED_LIBRARY:
+                    if (!added_shared_library) {
+                        added_shared_library = true;
+                        // Look for shared libraries in the same directory.
+                        link_command << " -Wl,-rpath,'$ORIGIN'"sv;
+                        link_command << " -L" << context.settings.build_dir;
+                    }
+                    link_command << " -l:"sv << file.compiled_path.filename();
+                default: break;
+            }
+        link_command << '\0';
 
-struct Runtime {
-private:
-    Context const& context;
-    std::span<SourceFile> files;
-    uint path_index = 0;
+        context.log.info("Linking sources together...");
+        // context.log.info(link_command.str());
 
-    DLL main_dll;
-    plthook_t* plthook = nullptr;
-    std::vector<DLL> loaded_dlls;
-    std::vector<fs::path> temporary_files;
+        if (context.settings.verbose)
+            context.log.info(link_command.view());
 
-public:
-    Runtime( Context const& context, std::span<SourceFile> files)
-        : context(context), files(files) {
-        runtime_instance = this;
+        if (int err = system(link_command.view().data())) {
+            context.log.error("error linking to ", context.settings.output_file, ": ", err);
+            return ErrorCode::FAILED;
+        }
 
-        // Open the created shared library.
-        this->main_dll = DLL::open_global(context.log, context.settings.output_file.c_str());
+        context.log.info("");
+        return ErrorCode::OK;
+    }
 
-        if (this->main_dll) {
-            if (plthook_open_by_handle(&this->plthook, this->main_dll.handle) != 0) {
-                context.log.error("plthook error: ", plthook_error());
-                return;
+    struct Runtime;
+    static Runtime* runtime_instance;
+
+    struct Runtime {
+    private:
+        Context const& context;
+        std::span<SourceFile> files;
+        uint path_index = 0;
+
+        DLL main_dll;
+        plthook_t* plthook = nullptr;
+        std::vector<DLL> loaded_dlls;
+        std::vector<fs::path> temporary_files;
+
+        FileWatcher file_watcher = {};
+
+    public:
+        Runtime( Context const& context, std::span<SourceFile> files)
+            : context(context), files(files) {
+            runtime_instance = this;
+
+            // Open the created shared library.
+            this->main_dll = DLL::open_global(context.log, context.settings.output_file.c_str());
+
+            if (this->main_dll) {
+                if (plthook_open_by_handle(&this->plthook, this->main_dll.handle) != 0) {
+                    context.log.error("plthook error: ", plthook_error());
+                    return;
+                }
+
+                using Func = void (*)();
+                Func* callback = (Func*)this->main_dll.symbol("livecc_callback");
+                if (callback != nullptr) {
+                    *(Func*)this->main_dll.symbol("livecc_callback") = +[] {
+                        runtime_instance->update();
+                    };
+                }
+                else
+                    context.log.info("no livecc_callback symbol found, so we can't check for file changes");
+
+                for (SourceFile& file : files) {
+                    std::string path = file.source_path.parent_path().string();
+                    if (file_watcher.add({path.c_str(), (uint)path.length()}) == ErrorCode::OK) {
+                        context.log.info("watching directory ", path);
+                    }
+                }
             }
 
-            using Func = void (*)();
-            Func* callback = (Func*)this->main_dll.symbol("livecc_callback");
-            if (callback != nullptr) {
-                *(Func*)this->main_dll.symbol("livecc_callback") = +[] {
-                    runtime_instance->update();
-                };
+        }
+
+        ~Runtime() {
+            if (this->plthook)
+                plthook_close(this->plthook);
+
+            // Close all the dlls.
+            while (!this->loaded_dlls.empty())
+                this->loaded_dlls.pop_back();
+            this->main_dll.close();
+
+            // Delete the temporary files.
+            while (!this->temporary_files.empty()) {
+                fs::remove(this->temporary_files.back());
+                this->temporary_files.pop_back();
             }
-            else
-                context.log.info("no livecc_callback symbol found, so we can't check for file changes");
         }
-    }
 
-    ~Runtime() {
-        if (this->plthook)
-            plthook_close(this->plthook);
-
-        // Close all the dlls.
-        while (!this->loaded_dlls.empty())
-            this->loaded_dlls.pop_back();
-        this->main_dll.close();
-
-        // Delete the temporary files.
-        while (!this->temporary_files.empty()) {
-            fs::remove(this->temporary_files.back());
-            this->temporary_files.pop_back();
+        void run(char const* func_name = "main") {
+            // Run the main function till we're done.
+            if (this->main_dll) {
+                auto main_func = (int(*)(int, char**))this->main_dll.symbol(func_name);
+                if (main_func == nullptr)
+                    context.log.info(func_name, " not found, so we can't start the application!");
+                else
+                    (*main_func)(0, nullptr);
+            }
         }
-    }
 
-    void run(char const* func_name = "main") {
-        // Run the main function till we're done.
-        if (this->main_dll) {
-            auto main_func = (int(*)(int, char**))this->main_dll.symbol(func_name);
-            if (main_func == nullptr)
-                context.log.info(func_name, " not found, so we can't start the application!");
-            else
-                (*main_func)(0, nullptr);
-        }
-    }
+    private:
+        void load_and_replace_functions(const fs::path& obj_path) {
+            if (DLL handle = DLL::open_deep(context.log, obj_path.c_str())) {
+                std::string_view str_table = handle.string_table();
+                for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
+                    if (str_table[i] == '\0') {
+                        const char* name = &str_table[i + 1];
+                        void* func = handle.symbol(name);
+                        // context.log.info(name);
 
-private:
-    void load_and_replace_functions(const fs::path& obj_path) {
-        if (DLL handle = DLL::open_deep(context.log, obj_path.c_str())) {
-            std::string_view str_table = handle.string_table();
-            for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
-                if (str_table[i] == '\0') {
-                    const char* name = &str_table[i + 1];
-                    void* func = handle.symbol(name);
-                    // context.log.info(name);
+                        if (func != nullptr && strlen(name) > 3) {
+                            bool is_cpp = name[0] == '_' && name[1] == 'Z';
+                            if (is_cpp) {
+                                int error = plthook_replace(this->plthook, name, func, NULL);
+                                (void)error;
 
-                    if (func != nullptr && strlen(name) > 3) {
-                        bool is_cpp = name[0] == '_' && name[1] == 'Z';
-                        if (is_cpp) {
-                            int error = plthook_replace(this->plthook, name, func, NULL);
-                            (void)error;
-
-                        // if (error == 0)
-                            // context.log.error(error);
+                            // if (error == 0)
+                                // context.log.error(error);
+                            }
                         }
                     }
                 }
-            }
 
-            this->loaded_dlls.emplace_back(std::move(handle));
+                this->loaded_dlls.emplace_back(std::move(handle));
+            }
         }
-    }
 
-public:
-    void update() {
-        path_index = (path_index + 1) % files.size();
+    public:
+        void update() {
+            auto& changed_files = file_watcher.poll();
+            for (auto& changed_file : changed_files) {
+                context.log.println("FILE CHANGED: ", changed_file);
 
-        SourceFile& file = files[path_index];
-        if (file.type == SourceType::UNIT && file.has_source_changed()) {
-            // TODO: only recompile the actual function that has been changed.
-
-            fs::path output_path = context.settings.output_dir / "tmp"
-                    / ("tmp" + (std::to_string(this->temporary_files.size()) + ".so"));
-            std::error_code ec;
-            fs::create_directories(context.settings.output_dir / "tmp", ec);
-            this->temporary_files.push_back(output_path);
-            if (compile_file(context, file, output_path, true) == ErrorCode::OK) {
-                load_and_replace_functions(output_path);
-                context.log.info("Done!");
-            }
-            else {
-                // Compilation failed, don't try again until the file changes again.
-                file.compiled_time = file.source_time;
-            }
-
-            // TODO: try to rebuild the entire thing, but make it
-            // cancelable so any further changes can also trigger a rebuild.
-        }
-    }
-};
-
-void run_tests(Context const& context) {
-    // Open the created shared library.
-    if (DLL dll = DLL::open_global(context.log, context.settings.output_file.c_str())) {
-        typedef void (*Func)(void);
-        std::vector<std::pair<const char*, Func>> test_functions;
-        std::string_view str_table = dll.string_table();
-        if (str_table.size() > 5)
-            for (size_t i = 0, l = str_table.size() - 5; i < l; ++i)
-                if (str_table[i] == '\0') {
-                    const char* name = &str_table[++i];
-                    if (str_table.substr(i).starts_with("__test_"sv)) {
-                        i += 7;
-                        Func func = (Func)dll.symbol(name);
-                        if (func != nullptr)
-                            test_functions.emplace_back(name, func);
+                for (SourceFile& file : files) {
+                    if (file.source_path == changed_file.ptr)  {
+                        on_file_changed(file);
+                        break;
                     }
                 }
+            }
 
-        context.log.info("Running ", test_functions.size(), " tests");
-        context.log.set_task("TESTING", test_functions.size());
-        ThreadPool pool(context.settings.job_count);
-        for (auto [name, func]: test_functions)
-            pool.enqueue([&context, func] -> ErrorCode {
-                func();
-                context.log.step_task();
-                return ErrorCode::OK; // TODO: check for errors.
-            });
-        pool.join();
-        context.log.clear_task();
-        context.log.info("\n");
-    }
-}
-
-static std::vector<std::string> get_arguments(int argn, char** argv) {
-    std::vector<std::string> args;
-    std::ifstream file_args("livecc.args");
-    std::string line;
-    while (std::getline(file_args, line)) {
-        bool in_whitespace = true;
-        bool quoted = false;
-        uint start = 0;
-        for (size_t i = 0, l = line.size(); i < l; ++i) {
-            switch (line[i]) {
-                case ' ': case '\t':
-                    if (!quoted && !in_whitespace) {
-                        in_whitespace = true;
-                        args.emplace_back(line.substr(start, i - start));
-                    }
-                    break;
-                case '\\': if (quoted) ++i; goto character;
-                case '"': quoted = !quoted; goto character;
-                default: character:
-                    if (in_whitespace) {
-                        in_whitespace = false;
-                        start = i;
-                    }
-                    break;
+            if (false) {
+                path_index = (path_index + 1) % files.size();
+                on_file_changed(files[path_index]);
             }
         }
-        if (!in_whitespace)
-            args.emplace_back(line.substr(start, line.size() - start));
+
+        void on_file_changed(SourceFile& file) {
+            if (file.type == SourceType::UNIT && file.has_source_changed()) {
+                // TODO: only recompile the actual function that has been changed.
+                fs::path output_path = context.settings.output_dir / "tmp"
+                        / ("tmp" + (std::to_string(this->temporary_files.size()) + ".so"));
+                std::error_code ec;
+                fs::create_directories(context.settings.output_dir / "tmp", ec);
+                this->temporary_files.push_back(output_path);
+                if (compile_file(context, file, output_path, true) == ErrorCode::OK) {
+                    load_and_replace_functions(output_path);
+                    context.log.info("Done!");
+                }
+                else {
+                    // Compilation failed, don't try again until the file changes again.
+                    file.compiled_time = file.source_time;
+                }
+
+                // TODO: try to rebuild the entire thing, but make it
+                // cancelable so any further changes can also trigger a rebuild.
+            }
+        }
+    };
+
+    void run_tests(Context const& context) {
+        // Open the created shared library.
+        if (DLL dll = DLL::open_global(context.log, context.settings.output_file.c_str())) {
+            typedef void (*Func)(void);
+            std::vector<std::pair<const char*, Func>> test_functions;
+            std::string_view str_table = dll.string_table();
+            if (str_table.size() > 5)
+                for (size_t i = 0, l = str_table.size() - 5; i < l; ++i)
+                    if (str_table[i] == '\0') {
+                        const char* name = &str_table[++i];
+                        if (str_table.substr(i).starts_with("__test_"sv)) {
+                            i += 7;
+                            Func func = (Func)dll.symbol(name);
+                            if (func != nullptr)
+                                test_functions.emplace_back(name, func);
+                        }
+                    }
+
+            context.log.info("Running ", test_functions.size(), " tests");
+            context.log.set_task("TESTING", test_functions.size());
+            ThreadPool pool(context.settings.job_count);
+            for (auto [name, func]: test_functions)
+                pool.enqueue([&context, func] -> ErrorCode {
+                    func();
+                    context.log.step_task();
+                    return ErrorCode::OK; // TODO: check for errors.
+                });
+            pool.join();
+            context.log.clear_task();
+            context.log.info("\n");
+        }
     }
 
-    for (int i = 1; i < argn; ++i)
-        args.emplace_back(argv[i]);
+    static std::vector<std::string> get_arguments(int argn, char** argv) {
+        std::vector<std::string> args;
+        std::ifstream file_args("livecc.args");
+        std::string line;
+        while (std::getline(file_args, line)) {
+            bool in_whitespace = true;
+            bool quoted = false;
+            uint start = 0;
+            for (size_t i = 0, l = line.size(); i < l; ++i) {
+                switch (line[i]) {
+                    case ' ': case '\t':
+                        if (!quoted && !in_whitespace) {
+                            in_whitespace = true;
+                            args.emplace_back(line.substr(start, i - start));
+                        }
+                        break;
+                    case '\\': if (quoted) ++i; goto character;
+                    case '"': quoted = !quoted; goto character;
+                    default: character:
+                        if (in_whitespace) {
+                            in_whitespace = false;
+                            start = i;
+                        }
+                        break;
+                }
+            }
+            if (!in_whitespace)
+                args.emplace_back(line.substr(start, line.size() - start));
+        }
 
-    return args;
+        for (int i = 1; i < argn; ++i)
+            args.emplace_back(argv[i]);
+
+        return args;
+    }
 }
 
 int main(int argn, char** argv) {
+    using namespace livecc;
     std::error_code std_err;
     Context context;
     std::vector<InputFile> input;

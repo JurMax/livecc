@@ -12,6 +12,7 @@
 #include <format>
 
 using namespace std::literals;
+using namespace livecc;
 
 /*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
     size_t i = path.find_last_of('.');
@@ -413,7 +414,7 @@ bool SourceFile::has_source_changed() {
         return !compiled_time || new_source_time > *compiled_time;
     }
 }
-std::string SourceFile::get_build_command(Context::Settings const& settings, const fs::path& output_path, bool live_compile) const {
+std::string SourceFile::get_build_command(Context::Settings const& settings, const fs::path& output_path, bool live_recompile) const {
     if (type.compile_to_timestamp())
         return std::format("touch \"{}\"", output_path.native());
     else if (type == SourceType::SHARED_LIBRARY)
@@ -442,12 +443,12 @@ std::string SourceFile::get_build_command(Context::Settings const& settings, con
         command << "-fmodule-header=user -xc++-header "; // compile all headers as c++
     else if (type == SourceType::SYSTEM_HEADER_UNIT)
         command << "-fmodule-header=system -xc++-header ";
-    else if (!live_compile) {
+    else if (!live_recompile) {
         if (type == SourceType::MODULE) command << "--precompile ";
         else command << "-c ";
     }
     else {
-        command << "-shared ";
+        command << "-DLIVECC_RECOMPILE -shared ";
         if (settings.rebuild_with_O0)
             command << "-O0 ";
     }

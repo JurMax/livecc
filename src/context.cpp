@@ -1,8 +1,7 @@
 #include "context.hpp"
 #include "platform.hpp"
 
-#ifdef __unix__
-#endif
+using namespace livecc;
 
 Context::Logging::Logging() {
     term_width = (int)platform::get_terminal_width();

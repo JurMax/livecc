@@ -4,9 +4,10 @@
 #include <system_error>
 #include <unordered_map>
 
-#include "thread_pool.hpp"
+#include "util/thread_pool.hpp"
 
 using namespace std::literals;
+using namespace livecc;
 
 struct DependencyTreeBuilder {
     Context const& context;
