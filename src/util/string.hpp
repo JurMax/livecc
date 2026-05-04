@@ -203,11 +203,18 @@ namespace livecc {
 
 template<>
 struct std::formatter<livecc::String> : std::formatter<string_view> {
-    inline auto format(livecc::String const& span, std::format_context& ctx) const {
-        return std::formatter<string_view>::format({span.ptr, span.len}, ctx);
+    inline auto format(livecc::String const& str, std::format_context& ctx) const {
+        return std::formatter<string_view>::format({str.ptr, str.len}, ctx);
     }
 };
 
 inline std::ostream& operator<<(std::ostream& out, livecc::String const& str) {
     return out << std::string_view{str.ptr, str.len};
 }
+
+template<>
+struct std::hash<livecc::String> {
+    constexpr inline size_t operator()(livecc::String const& str) const {
+        return str.hash();;
+    }
+};

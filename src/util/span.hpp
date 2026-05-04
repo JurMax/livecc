@@ -236,11 +236,16 @@ struct std::formatter<livecc::Span<T>> {
     }
 };
 
-
-
 template<>
 struct std::formatter<livecc::Span<char const>> : std::formatter<std::string_view> {
     auto format(livecc::Span<char const> const& span, std::format_context& ctx) const {
         return std::formatter<std::string_view>::format({span.ptr, span.len}, ctx);
+    }
+};
+
+template<typename T>
+struct std::hash<livecc::Span<T>> {
+    constexpr inline size_t operator()(livecc::Span<T> const& span) const {
+        return span.hash();
     }
 };

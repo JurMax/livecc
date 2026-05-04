@@ -51,8 +51,8 @@ bool DLL::is_open() const {
             dlclose(handle);
     }
 
-    void* DLL::symbol(const char* name) {
-        return handle ? dlsym(handle, name) : nullptr;
+    void* DLL::symbol(String const& name) {
+        return handle ? dlsym(handle, name.ptr) : nullptr;
     }
 
     std::string_view DLL::get_soname() {
@@ -67,7 +67,7 @@ bool DLL::is_open() const {
         return str_table + offset;
     }
 
-    std::string_view DLL::string_table() {
+    Span<char const> DLL::string_table() {
         if (handle == nullptr)
             return "";
         const char* str_table = "";
@@ -76,7 +76,7 @@ bool DLL::is_open() const {
             if (ptr->d_tag == DT_STRTAB) str_table = (const char*)ptr->d_un.d_ptr;
             else if (ptr->d_tag == DT_STRSZ) str_table_size = ptr->d_un.d_val;
         }
-        return {str_table, str_table_size};
+        return {str_table, (uint)str_table_size};
     }
 
     uint platform::get_terminal_width() {

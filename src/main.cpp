@@ -390,7 +390,10 @@ namespace livecc {
         std::vector<DLL> loaded_dlls;
         std::vector<fs::path> temporary_files;
 
+        std::unordered_map<Span<char const>, List<Span<char>>> replaceable_symbols;
+
         FileWatcher file_watcher = {};
+        List<char const*> changed_files;
 
     public:
         Runtime( Context const& context, std::span<SourceFile> files)
@@ -406,11 +409,11 @@ namespace livecc {
                     return;
                 }
 
-                using Func = void (*)();
-                Func* callback = (Func*)this->main_dll.symbol("livecc_callback");
-                if (callback != nullptr) {
-                    *(Func*)this->main_dll.symbol("livecc_callback") = +[] {
+                if (auto callback = (uint (**)(char const* const** changed))this->main_dll.symbol("livecc_callback")) {
+                    *callback = +[] (char const* const** changed) -> uint {
                         runtime_instance->update();
+                        *changed = runtime_instance->changed_files.ptr;
+                        return runtime_instance->changed_files.len;
                     };
                 }
                 else
@@ -420,6 +423,20 @@ namespace livecc {
                     std::string path = file.source_path.parent_path().string();
                     if (file_watcher.add({path.c_str(), (uint)path.length()}) == ErrorCode::OK) {
                         context.log.info("watching directory ", path);
+                    }
+                }
+
+                // Create a list of symbols that can be overwritten later, such as vtables.
+                Span<char const> str_table = this->main_dll.string_table();
+                String name;
+                for (uint i = 0; i < str_table.len; i += name.len + 1) {
+                    name = &str_table[i];
+                    if (name.contains("livecc_replaceable_symbol")) {
+                        if (auto func = (void*(*)(uint*))this->main_dll.symbol(name)) {
+                            auto& replaceable_symbol = this->replaceable_symbols[name];
+                            if (replaceable_symbol.append())
+                                replaceable_symbol[0].ptr = (char*)func(&replaceable_symbol[0].len);
+                        }
                     }
                 }
             }
@@ -456,23 +473,31 @@ namespace livecc {
     private:
         void load_and_replace_functions(const fs::path& obj_path) {
             if (DLL handle = DLL::open_deep(context.log, obj_path.c_str())) {
-                std::string_view str_table = handle.string_table();
-                for (size_t i = 0, l = str_table.size() - 1; i < l; ++i) {
-                    if (str_table[i] == '\0') {
-                        const char* name = &str_table[i + 1];
-                        void* func = handle.symbol(name);
-                        // context.log.info(name);
+                Span<char const> str_table = handle.string_table();
+                String name;
+                for (uint i = 0; i < str_table.len; i += name.len + 1) {
+                    name = &str_table[i];
+                    if (void* func = name.len ? handle.symbol(name) : nullptr) {
+                        if (context.settings.verbose)
+                            context.log.info("replacing symbol ", name);
 
-                        if (func != nullptr && strlen(name) > 3) {
-                            bool is_cpp = name[0] == '_' && name[1] == 'Z';
-                            if (is_cpp) {
-                                int error = plthook_replace(this->plthook, name, func, NULL);
-                                (void)error;
-
-                            // if (error == 0)
-                                // context.log.error(error);
+                        if (name.contains("livecc_replaceable_symbol")) {
+                            // Overwrite the old symbols
+                            uint new_len;
+                            void* new_ptr = ((void*(*)(uint*))func)(&new_len);
+                            auto& old_symbols = this->replaceable_symbols[name];
+                            for (Span<char> old_symbol : old_symbols) {
+                                if (new_len != old_symbol.len) {
+                                    context.log.error("symbol size changed: ", new_len, " != ", old_symbol.len, " from ", name);
+                                    break;
+                                }
+                                else
+                                    memcpy((void*)old_symbol.ptr, new_ptr, new_len);
                             }
+                            (void)old_symbols.append((char*)new_ptr, new_len);
                         }
+                        else if (name.len > 3)
+                            plthook_replace(this->plthook, name.ptr, func, NULL);
                     }
                 }
 
@@ -482,13 +507,14 @@ namespace livecc {
 
     public:
         void update() {
-            auto& changed_files = file_watcher.poll();
+            this->changed_files.clear();
+            List<String>& changed_files = file_watcher.poll();
             for (auto& changed_file : changed_files) {
                 context.log.println("FILE CHANGED: ", changed_file);
-
+                (void)this->changed_files.append(changed_file.ptr);
                 for (SourceFile& file : files) {
                     if (file.source_path == changed_file.ptr)  {
-                        on_file_changed(file);
+                        check_file_for_changed(file);
                         break;
                     }
                 }
@@ -496,11 +522,11 @@ namespace livecc {
 
             if (false) {
                 path_index = (path_index + 1) % files.size();
-                on_file_changed(files[path_index]);
+                check_file_for_changed(files[path_index]);
             }
         }
 
-        void on_file_changed(SourceFile& file) {
+        void check_file_for_changed(SourceFile& file) {
             if (file.type == SourceType::UNIT && file.has_source_changed()) {
                 // TODO: only recompile the actual function that has been changed.
                 fs::path output_path = context.settings.output_dir / "tmp"
@@ -526,17 +552,15 @@ namespace livecc {
     void run_tests(Context const& context) {
         // Open the created shared library.
         if (DLL dll = DLL::open_global(context.log, context.settings.output_file.c_str())) {
-            typedef void (*Func)(void);
-            std::vector<std::pair<const char*, Func>> test_functions;
-            std::string_view str_table = dll.string_table();
-            if (str_table.size() > 5)
-                for (size_t i = 0, l = str_table.size() - 5; i < l; ++i)
+            std::vector<std::pair<const char*, void(*)()>> test_functions;
+            Span<char const> str_table = dll.string_table();
+            if (str_table.len > 5)
+                for (size_t i = 0, l = str_table.len - 5; i < l; ++i)
                     if (str_table[i] == '\0') {
                         const char* name = &str_table[++i];
-                        if (str_table.substr(i).starts_with("__test_"sv)) {
+                        if (str_table.slice(i).starts_with("__test_")) {
                             i += 7;
-                            Func func = (Func)dll.symbol(name);
-                            if (func != nullptr)
+                            if (auto func = (void(*)())dll.symbol(name))
                                 test_functions.emplace_back(name, func);
                         }
                     }

@@ -22,9 +22,9 @@ namespace livecc {
         inline operator bool() const { return is_open(); }
         bool is_open() const;
 
-        void* symbol(const char* name);
+        void* symbol(String const& name);
         std::string_view get_soname();
-        std::string_view string_table();
+        Span<char const> string_table();
         void close();
 
         void* handle;
