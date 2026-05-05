@@ -17,6 +17,7 @@
 
 #include <charconv>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -421,10 +422,10 @@ namespace livecc {
 
                 for (SourceFile& file : files) {
                     std::string path = file.source_path.parent_path().string();
-                    if (file_watcher.add({path.c_str(), (uint)path.length()}) == ErrorCode::OK) {
-                        context.log.info("watching directory ", path);
-                    }
+                    file_watcher.add({path.c_str(), (uint)path.length()});
                 }
+                if (file_watcher.watching_dirs.len != 0)
+                    context.log.info("watching ", file_watcher.watching_dirs.len, " directories");
 
                 // Create a list of symbols that can be overwritten later, such as vtables.
                 Span<char const> str_table = this->main_dll.string_table();
@@ -528,6 +529,8 @@ namespace livecc {
 
         void check_file_for_changed(SourceFile& file) {
             if (file.type == SourceType::UNIT && file.has_source_changed()) {
+                auto timer = std::chrono::system_clock::now().time_since_epoch();
+
                 // TODO: only recompile the actual function that has been changed.
                 fs::path output_path = context.settings.output_dir / "tmp"
                         / ("tmp" + (std::to_string(this->temporary_files.size()) + ".so"));
@@ -536,7 +539,8 @@ namespace livecc {
                 this->temporary_files.push_back(output_path);
                 if (compile_file(context, file, output_path, true) == ErrorCode::OK) {
                     load_and_replace_functions(output_path);
-                    context.log.info("Done!");
+
+                    context.log.info("took ", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch() - timer).count(), " milliseconds");
                 }
                 else {
                     // Compilation failed, don't try again until the file changes again.

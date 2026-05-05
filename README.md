@@ -4,6 +4,8 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 ## TODO
 
+- Rename SourceFile to just File.
+
 - Support for unity builds for standalone and shared.
 
 - Maybe add the added directories also as include directories?
@@ -14,24 +16,14 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Imported headers should become header units automatically (maybe add two versions?)
 -- we can see if they're header unist based on "" / <>
 
-- Replace setDLLCallback with just a regular function call
--- Use a macro to use it only when LIVE_CC is used.
--- We can do more talking to the compiler using this method.
--- See if we need livecc to load a dll containing this function or we can ust include it in livecc.
-
 - Add a --keep-alive option, which rebuilds the given target each time there is a change.
 -- Rebuild dependencies: reanalyse dependencies for all changes files, and rebuild the map where applicable
 - Fix module support: actually build the two thingies.
 - During live reload: build the normal object file on an extra thread, to allow quicker restart.
 - Add a good help screen, with examples.
-- Use inotify to check for file changes while running in live reload mode.
 - Replace a lot of uses of fs::path and std::string to not allocate.
 - Test what happens with missing files and what should happen
 - Support C style pch
-- GCC support by adding an support for -fmodule-mapper: https://gcc.gnu.org/wiki/cxx-modules#CMI_Location.
-
-- Allow specifing any .args file to add the content of that file as arguments.
--- Treats that as the base directory for any files referenced in there.
-- namespace everything
+- GCC support by adding an support for -fmodule-mapper: <https://gcc.gnu.org/wiki/cxx-modules#CMI_Location>.
 
 - More sensible default warning maybe?1

@@ -14,6 +14,8 @@
 using namespace std::literals;
 using namespace livecc;
 
+// TODO: use hash/switch.
+
 /*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
     size_t i = path.find_last_of('.');
     if (i != std::string_view::npos) {
@@ -295,8 +297,10 @@ SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, 
             compiled_path += ".timestamp";
             break;
         case SourceType::SHARED_LIBRARY:
-        case SourceType::RESOURCE:
             // Shared library gets updated later to match the libraries SONAME.
+            compiled_path = settings.build_dir / source_path.filename();
+            break;
+        case SourceType::RESOURCE:
             compiled_path = settings.build_dir / source_path.filename();
             break;
     }
