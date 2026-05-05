@@ -1,0 +1,2 @@
+-std=c++23 -g -Wno-dangling-else
+-o build/livecc

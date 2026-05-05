@@ -27,3 +27,5 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - GCC support by adding an support for -fmodule-mapper: <https://gcc.gnu.org/wiki/cxx-modules#CMI_Location>.
 
 - More sensible default warning maybe?1
+
+- Live update should compile using the same system, so its okay if multiple objects get compiled.
