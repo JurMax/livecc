@@ -158,10 +158,17 @@ namespace livecc {
 
         // Set the output directory.
         switch (settings.build_type) {
-            case BuildType::LIVE:       build_command << "-DLIVECC_LIVE ";
-                                        settings.output_dir = settings.build_dir / "live"; break;
-            case BuildType::SHARED:     settings.output_dir = settings.build_dir / "shared"; break;
-            case BuildType::STANDALONE: settings.output_dir = settings.build_dir / "standalone"; break;
+            case BuildType::LIVE:
+                build_command << "-DLIVECC_LIVE ";
+                build_command << "-D\"LIVECC_LIVE_CALLBACK=extern \\\"C\\\" { uint (*livecc_callback)(char const* const** changed_files); }\" ";
+                settings.output_dir = settings.build_dir / "live";
+                break;
+            case BuildType::SHARED:
+                settings.output_dir = settings.build_dir / "shared";
+                break;
+            case BuildType::STANDALONE:
+                settings.output_dir = settings.build_dir / "standalone";
+                break;
         }
 
         // Set the output file path.
@@ -276,6 +283,8 @@ namespace livecc {
     }
 
     void update_compile_commands(Context::Settings const& settings, std::span<SourceFile> files) {
+        std::error_code err;
+
         // If a file was not compiled before, we need to recreate the compile_commands.json
         bool create_compile_commands = false;
         for (SourceFile& file : files)
@@ -287,14 +296,13 @@ namespace livecc {
         // If the build args changed, delete all the compiled files so they have to be recompiled.
         if (have_build_args_changed(settings)) {
             create_compile_commands = true;
-            std::error_code err;
             for (SourceFile& file : files) {
                 fs::remove(file.compiled_path, err);
                 file.compiled_time.reset();
             }
         }
 
-        if (create_compile_commands) {
+        if (create_compile_commands || !fs::exists("compile_commands.json", err)) {
             // TODO: maybe do this after compilation. Then you dont need to update
             // compile_path separately, and you also have the modules present.
             std::ofstream compile_commands("compile_commands.json");
@@ -314,7 +322,7 @@ namespace livecc {
                 // TODO: dont use the full build command, its way too big
                 std::string command = file.get_build_command(settings);
                 for (char c : command) {
-                    if (c == '"')
+                    if (c == '"' || c == '\\')
                         compile_commands.put('\\');
                     compile_commands.put(c);
                 }
