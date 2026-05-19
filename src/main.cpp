@@ -27,6 +27,7 @@
 #include "platform.hpp"
 #include "plthook/plthook.h"
 
+#include "version.hpp"
 
 // Sources: (order from bottom to top)
 // https://stackoverflow.com/questions/2694290/returning-a-shared-library-symbol-table
@@ -65,6 +66,7 @@ namespace livecc {
         Context::Settings& settings = context.settings;
         std::ostringstream build_command;
         std::ostringstream link_arguments;
+        bool has_pch = false;
 
         if (const char* env_compiler = std::getenv("CXX"))
             settings.compiler = env_compiler;
@@ -147,8 +149,16 @@ namespace livecc {
                             context.log.error("unknown input supplied: ", arg);
                         break;
                     case OUTPUT:   settings.output_name = arg; break;
-                    case PCH:      files.emplace_back(arg, arg.ends_with(".h") ? SourceType::C_PCH : SourceType::PCH); break;
-                    case PCH_CPP:  files.emplace_back(arg, SourceType::PCH); break;
+                    case PCH:
+                    case PCH_CPP:
+                        if (has_pch)
+                            context.log.error("it's only possible to specify one pch file");
+                        else {
+                            has_pch = true;
+                            files.emplace_back(arg, next_arg_type != PCH_CPP && arg.ends_with(".h")
+                                ? SourceType::C_PCH : SourceType::PCH);
+                        }
+                        break;
                     case RESOURCE: files.emplace_back(arg, SourceType::RESOURCE); break;
                     case FLAG:     build_command << arg << ' '; break;
                 }
@@ -158,10 +168,17 @@ namespace livecc {
 
         // Set the output directory.
         switch (settings.build_type) {
-            case BuildType::LIVE:
-                build_command << "-DLIVECC_LIVE ";
-                build_command << "-D\"LIVECC_LIVE_CALLBACK=extern \\\"C\\\" { uint (*livecc_callback)(char const* const** changed_files); }\" ";
-                settings.output_dir = settings.build_dir / "live";
+            case BuildType::LIVE: {
+                    build_command << "-DLIVECC_LIVE ";
+                    settings.output_dir = settings.build_dir / "live";
+
+                    // Add the livecc callback dummies. These files are created in handle_config_changes below
+                    if (!has_pch) {
+                        files.emplace_back(settings.live_callback_header(), SourceType::PCH);
+                        has_pch = true;
+                    }
+                    files.emplace_back(settings.live_callback_source(), SourceType::C_UNIT);
+                }
                 break;
             case BuildType::SHARED:
                 settings.output_dir = settings.build_dir / "shared";
@@ -204,6 +221,7 @@ namespace livecc {
 
         settings.build_command = build_command.str();
         settings.link_arguments = link_arguments.str();
+        fs::create_directories(context.settings.output_dir, err);
         return ErrorCode::OK;
     }
 
@@ -213,8 +231,11 @@ namespace livecc {
         // if their file changes is higher than command.txt
 
         std::vector<char> build_command;
-        build_command.reserve(settings.build_command.size()
+        build_command.reserve(str_length(version) + 2
+            + settings.build_command.size()
             + settings.cpp_version.size() + settings.c_version.size() + 2);
+        build_command.append_range(std::string_view{version});
+        build_command.append_range(std::string_view{": "});
         build_command.append_range(settings.build_command);
         build_command.append_range(settings.cpp_version);
         build_command.push_back(' ');
@@ -282,11 +303,12 @@ namespace livecc {
         else return ErrorCode::OK;
     }
 
-    void update_compile_commands(Context::Settings const& settings, std::span<SourceFile> files) {
+    void handle_config_changes(Context::Settings const& settings, std::span<SourceFile> files) {
         std::error_code err;
 
         // If a file was not compiled before, we need to recreate the compile_commands.json
         bool create_compile_commands = false;
+        bool create_callback_files = false;
         for (SourceFile& file : files)
             if (!file.compiled_time && !file.type.is_include()) {
                 create_compile_commands = true;
@@ -296,10 +318,34 @@ namespace livecc {
         // If the build args changed, delete all the compiled files so they have to be recompiled.
         if (have_build_args_changed(settings)) {
             create_compile_commands = true;
+            create_callback_files = true;
             for (SourceFile& file : files) {
                 fs::remove(file.compiled_path, err);
                 file.compiled_time.reset();
             }
+        }
+
+        // Recreate the livecc callback files.
+        if (settings.build_type == BuildType::LIVE) {
+            fs::path source = settings.live_callback_source();
+            fs::path header = settings.live_callback_header();
+            if (create_callback_files || !fs::exists(source))
+                std::ofstream(source) <<
+                    "#include \"livecc_callback.h\"\n"
+                    "unsigned (*livecc_callback_handle)(char const* const** changed_files);\n"
+                    "unsigned livecc_check_for_changes(char const* const** changed_files) {\n"
+                    "    return livecc_callback_handle(changed_files);\n"
+                    "}\n";
+            if (create_callback_files || !fs::exists(header))
+                std::ofstream(header) <<
+                    "#pragma once\n"
+                    "#ifdef __cplusplus\nextern \"C\"\n#endif\n"
+                    "unsigned livecc_check_for_changes(char const* const** changed_files);\n\n"
+                    "#ifdef __cplusplus\n"
+                    "static inline unsigned livecc_check_for_changes() {\n"
+                    "    return livecc_check_for_changes(nullptr);\n"
+                    "}\n"
+                    "#endif\n";
         }
 
         if (create_compile_commands || !fs::exists("compile_commands.json", err)) {
@@ -389,7 +435,6 @@ namespace livecc {
     static Runtime* runtime_instance;
 
     struct Runtime {
-    private:
         Context const& context;
         std::span<SourceFile> files;
         uint path_index = 0;
@@ -404,7 +449,6 @@ namespace livecc {
         FileWatcher file_watcher = {};
         List<char const*> changed_files;
 
-    public:
         Runtime( Context const& context, std::span<SourceFile> files)
             : context(context), files(files) {
             runtime_instance = this;
@@ -418,10 +462,11 @@ namespace livecc {
                     return;
                 }
 
-                if (auto callback = (uint (**)(char const* const** changed))this->main_dll.symbol("livecc_callback")) {
+                if (auto callback = (uint (**)(char const* const** changed))this->main_dll.symbol("livecc_callback_handle")) {
                     *callback = +[] (char const* const** changed) -> uint {
                         runtime_instance->update();
-                        *changed = runtime_instance->changed_files.ptr;
+                        if (changed != nullptr)
+                            *changed = runtime_instance->changed_files.ptr;
                         return runtime_instance->changed_files.len;
                     };
                 }
@@ -449,7 +494,6 @@ namespace livecc {
                     }
                 }
             }
-
         }
 
         ~Runtime() {
@@ -663,7 +707,7 @@ int main(int argn, char** argv) {
     err = dependency_tree.build(context, input);
     if (err != ErrorCode::OK) return (int)err;
 
-    update_compile_commands(context.settings, dependency_tree.files);
+    handle_config_changes(context.settings, dependency_tree.files);
 
     if (dependency_tree.need_compilation() || !fs::exists(context.settings.output_file)) {
         if (!context.settings.do_compile)

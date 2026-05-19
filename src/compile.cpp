@@ -156,7 +156,7 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
     // If the output is only a timestamp, just update it.
     // If a file is an include but it doesn't exist don't
     // give an error, but also just note down the time.
-    if (file.type.compile_to_timestamp() || (file.type.is_include() && !file.source_time)) {
+    if (file.type.compile_to_timestamp() || (file.type == SourceType::HEADER && !file.source_time)) {
         file.compiled_time = file.source_time;
         std::ofstream stream(output_path);
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
@@ -173,10 +173,14 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
 
     // Create PCH file.
     if (file.type.is_pch()) {
-        if (context.settings.compiler_type == Context::Settings::GCC)
-            fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
-        else
-            std::ofstream{fs::path{file.pch_include()}} << "#error PCH not included\n";
+        context.log.info("Compiliung pch !!");
+        fs::path live_callback_header = context.settings.live_callback_header();
+        if (file.source_path != live_callback_header) {
+            build_command += " -include\"";
+            build_command += live_callback_header.c_str();
+            build_command += '"';
+        }
+        fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
     }
     else if (context.settings.compiler_type == Context::Settings::GCC && file.type.uses_modules()) {
         module_pipe.emplace(context, file);

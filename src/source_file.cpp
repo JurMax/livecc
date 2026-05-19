@@ -331,10 +331,10 @@ ErrorCode SourceFile::read_dependencies(Context const& context) {
                     break;
                 case ErrorCode::OPEN_FAILED:
                     // Not finding headers is okay, they might be hidden behind a preprocessor.
-                    if (type == SourceType::HEADER || type == SourceType::HEADER_UNIT)
-                        ret = ErrorCode::OK;
-                    else
-                        context.log.error("failed to open file ", source_path);
+                    // if (type == SourceType::HEADER || type == SourceType::HEADER_UNIT)
+                    ret = ErrorCode::OK;
+                    // else
+                        // context.log.error("failed to open file ", source_path);
                     break;
                 case ErrorCode::BUFFER_TOO_SMALL:
                     context.log.error("a path or name in ", source_path, " is larger than 4096 characters");

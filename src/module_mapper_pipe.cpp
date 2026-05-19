@@ -2,6 +2,7 @@
 
 #include <ranges>
 #include <string_view>
+#include <unistd.h>
 
 #include "context.hpp"
 #include "source_file.hpp"

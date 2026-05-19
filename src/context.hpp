@@ -59,6 +59,9 @@ namespace livecc {
 
             // The amount of files to compile in parallel.
             int job_count = 0;
+
+            fs::path live_callback_source() const { return this->output_dir / "livecc_callback.c"; }
+            fs::path live_callback_header() const { return this->output_dir / "livecc_callback.h"; }
         } settings;
 
         mutable struct Logging {
