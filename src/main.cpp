@@ -190,7 +190,7 @@ namespace livecc {
             case BuildType::SHARED:     settings.output_file = settings.build_dir / ("lib" + settings.output_name + ".a"); break;
             case BuildType::TESTS:      settings.output_file = settings.build_dir / ("lib" + settings.output_name + "_tests.a"); break;
             case BuildType::STANDALONE: settings.output_file = settings.build_dir / settings.output_name; break;
-            case BuildType::UNITY:      settings.output_file = settings.build_dir / settings.output_name; break;
+            case BuildType::UNITY:      settings.output_file = settings.build_dir / (settings.output_name + "_unity"); break;
         }
         switch (settings.build_type) {
             case BuildType::LIVE:
@@ -410,6 +410,8 @@ namespace livecc {
                     if (context.settings.build_type != BuildType::UNITY)
                         link_command << ' ' << file.compiled_path;
                     else {
+                        if (context.settings.verbose)
+                            context.log.info("adding file ", file.source_path);
                         std::ifstream in(file.source_path);
                         unity_file << "#line 1 " << file.source_path << '\n';
                         for (std::string str; std::getline(in, str); ) {
