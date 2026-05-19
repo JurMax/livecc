@@ -1,4 +1,5 @@
 #include "compile.hpp"
+#include "context.hpp"
 #include "module_mapper_pipe.hpp"
 #include "util/thread_pool.hpp"
 
@@ -154,9 +155,12 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
     std::error_code ec;
 
     // If the output is only a timestamp, just update it.
+    // If we are doing a unity build, use time stamps to only check for changes.
     // If a file is an include but it doesn't exist don't
     // give an error, but also just note down the time.
-    if (file.type.compile_to_timestamp() || (file.type == SourceType::HEADER && !file.source_time)) {
+    if (file.type.compile_to_timestamp()
+        || context.settings.build_type == BuildType::UNITY
+        || (file.type == SourceType::HEADER && !file.source_time)) {
         file.compiled_time = file.source_time;
         std::ofstream stream(output_path);
         return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
@@ -173,7 +177,6 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
 
     // Create PCH file.
     if (file.type.is_pch()) {
-        context.log.info("Compiliung pch !!");
         fs::path live_callback_header = context.settings.live_callback_header();
         if (file.source_path != live_callback_header) {
             build_command += " -include\"";

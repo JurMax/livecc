@@ -29,3 +29,5 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - More sensible default warning maybe?
 
 - Live update should compile using the same system, so its okay if multiple objects get compiled.
+
+- Have standard optimisation modes in settings.

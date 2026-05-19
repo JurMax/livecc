@@ -10,6 +10,7 @@
  */
 
 
+#include "context.hpp"
 #include "dependency_tree.hpp"
 #include "compile.hpp"
 #include "util/base.hpp"
@@ -114,11 +115,12 @@ namespace livecc {
                 else if (arg == "--pch") next_arg_type = PCH;
                 else if (arg == "--c++pch") next_arg_type = PCH_CPP;
                 else if (arg == "--resource") next_arg_type = RESOURCE;
-                else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
                 else if (arg == "--shared") settings.build_type = BuildType::SHARED;
+                else if (arg == "--standalone") settings.build_type = BuildType::STANDALONE;
+                else if (arg == "--test") settings.build_type = BuildType::TESTS;
+                else if (arg == "--unity") settings.build_type = BuildType::UNITY;
                 else if (arg == "--no-rebuild-with-O0") settings.rebuild_with_O0 = false;
                 else if (arg == "--verbose") settings.verbose = true;
-                else if (arg == "--test") settings.test = true;
                 else if (arg == "--clean") { settings.clean = true; settings.do_compile = false; }
                 else if (arg == "--start-clean") settings.clean = true;
                 else if (arg == "--header-units") settings.use_header_units = true;
@@ -166,52 +168,51 @@ namespace livecc {
             }
         }
 
-        // Set the output directory.
-        switch (settings.build_type) {
-            case BuildType::LIVE: {
-                    build_command << "-DLIVECC_LIVE ";
-                    settings.output_dir = settings.build_dir / "live";
+        for (char& c : settings.output_name)
+            if (c == '/') c = '_';
 
-                    // Add the livecc callback dummies. These files are created in handle_config_changes below
-                    if (!has_pch) {
-                        files.emplace_back(settings.live_callback_header(), SourceType::PCH);
-                        has_pch = true;
-                    }
-                    files.emplace_back(settings.live_callback_source(), SourceType::C_UNIT);
-                }
-                break;
+        switch (settings.build_type) {
+            case BuildType::LIVE:       build_command << "-DLIVECC_LIVE "; break;
+            case BuildType::SHARED:     build_command << "-DLIVECC_SHARED "; break;
+            case BuildType::TESTS:      build_command << "-DLIVECC_TESTS -DTEST "; break;
+            case BuildType::STANDALONE: build_command << "-DLIVECC_STANDALONE "; break;
+            case BuildType::UNITY:      build_command << "-DLIVECC_UNITY "; break;
+        }
+        switch (settings.build_type) {
+            case BuildType::LIVE:       settings.output_dir = settings.build_dir / "live";
+            case BuildType::SHARED:     settings.output_dir = settings.build_dir / "shared"; break;
+            case BuildType::TESTS:      settings.output_dir = settings.build_dir / "tests"; break;
+            case BuildType::STANDALONE: settings.output_dir = settings.build_dir / "standalone"; break;
+            case BuildType::UNITY:      settings.output_dir = settings.build_dir / "unity"; break;
+        }
+        switch (settings.build_type) {
+            case BuildType::LIVE:       settings.output_file = settings.build_dir / ("lib" + settings.output_name + "_live.a"); break;
+            case BuildType::SHARED:     settings.output_file = settings.build_dir / ("lib" + settings.output_name + ".a"); break;
+            case BuildType::TESTS:      settings.output_file = settings.build_dir / ("lib" + settings.output_name + "_tests.a"); break;
+            case BuildType::STANDALONE: settings.output_file = settings.build_dir / settings.output_name; break;
+            case BuildType::UNITY:      settings.output_file = settings.build_dir / settings.output_name; break;
+        }
+        switch (settings.build_type) {
+            case BuildType::LIVE:
             case BuildType::SHARED:
-                settings.output_dir = settings.build_dir / "shared";
-                break;
+            case BuildType::TESTS:
+                build_command << "-fPIC ";
+                link_arguments << "-shared ";
             case BuildType::STANDALONE:
-                settings.output_dir = settings.build_dir / "standalone";
+            case BuildType::UNITY:
                 break;
         }
 
-        // Set the output file path.
-        for (char& c : settings.output_name) if (c == '/') c = '_';
-        std::string output_filename;
-        switch (settings.build_type) {
-            case BuildType::LIVE:   output_filename = "lib" + settings.output_name + "_live.a"; break;
-            case BuildType::SHARED: output_filename = "lib" + settings.output_name + ".a"; break;
-            case BuildType::STANDALONE: output_filename = settings.output_name; break;
+        // Add the livecc callback dummies. These files are created in handle_config_changes below
+        if (settings.build_type == BuildType::LIVE) {
+            if (!has_pch) {
+                files.emplace_back(settings.live_callback_header(), SourceType::PCH);
+                has_pch = true;
+            }
+            files.emplace_back(settings.live_callback_source(), SourceType::C_UNIT);
         }
-        settings.output_file = settings.build_dir / output_filename;
 
-        if (settings.build_type == BuildType::LIVE || settings.build_type == BuildType::SHARED) {
-            build_command << "-fPIC ";
-            link_arguments << "-shared ";
-        }
-        // if (context.build_type == LIVE)
-            // build_command << "-fno-inline ";// -fno-ipa-sra";
         // -fno-ipa-sra disables removal of unused parameters, as this breaks code recompiling for functions with unused arguments for some reason.
-
-        if (settings.test) {
-            if (settings.build_type == BuildType::STANDALONE)
-                context.log.error("tests can't be run in standalone mode!");
-            else
-                build_command << "-DTEST ";
-        }
 
         // Turn all explicitly passed headers into header units.
         if (settings.use_header_units)
@@ -329,14 +330,14 @@ namespace livecc {
         if (settings.build_type == BuildType::LIVE) {
             fs::path source = settings.live_callback_source();
             fs::path header = settings.live_callback_header();
-            if (create_callback_files || !fs::exists(source))
+            if (create_callback_files || !fs::exists(source, err))
                 std::ofstream(source) <<
                     "#include \"livecc_callback.h\"\n"
                     "unsigned (*livecc_callback_handle)(char const* const** changed_files);\n"
                     "unsigned livecc_check_for_changes(char const* const** changed_files) {\n"
                     "    return livecc_callback_handle(changed_files);\n"
                     "}\n";
-            if (create_callback_files || !fs::exists(header))
+            if (create_callback_files || !fs::exists(header, err))
                 std::ofstream(header) <<
                     "#pragma once\n"
                     "#ifdef __cplusplus\nextern \"C\"\n#endif\n"
@@ -390,15 +391,31 @@ namespace livecc {
         std::ostringstream link_command;
         link_command << context.settings.build_command;
         link_command << context.settings.link_arguments;
-        if (context.settings.build_type != BuildType::STANDALONE)
-            link_command << "-Wl,-z,defs "sv; // Make sure that all symbols are resolved.
+        link_command << "-Wl,-z,defs "sv; // Make sure that all symbols are resolved.
         link_command << "-o "sv << context.settings.output_file;
-        for (SourceFile& file : files)
+
+        std::ofstream unity_file;
+        if (context.settings.build_type == BuildType::UNITY) {
+            fs::path unity_path = context.settings.output_dir / "unity.cpp";
+            link_command << ' ' << context.settings.cpp_version;
+            link_command << ' ' << unity_path;
+            unity_file.open(unity_path);
+        }
+
+        for (SourceFile& file : files) {
             switch (file.type) {
                 case SourceType::UNIT:
                 case SourceType::C_UNIT:
                 case SourceType::MODULE:
-                    link_command << ' ' << file.compiled_path; break;
+                    if (context.settings.build_type != BuildType::UNITY)
+                        link_command << ' ' << file.compiled_path;
+                    else {
+                        std::ifstream in(file.source_path);
+                        for (std::string str; std::getline(in, str); )
+                            unity_file << str << '\n';
+                        link_command << " -I" << file.source_path.parent_path(); // TODO: make save.
+                    }
+                    break;
                 case SourceType::OBJECT:
                 case SourceType::STATIC_LIBRARY:
                     link_command << ' ' << file.source_path; break;
@@ -414,6 +431,7 @@ namespace livecc {
                     link_command << " -l:"sv << file.compiled_path.filename();
                 default: break;
             }
+        }
         link_command << '\0';
 
         context.log.info("Linking sources together...");
@@ -421,6 +439,9 @@ namespace livecc {
 
         if (context.settings.verbose)
             context.log.info(link_command.view());
+
+        if (unity_file.is_open())
+            unity_file.close();
 
         if (int err = system(link_command.view().data())) {
             context.log.error("error linking to ", context.settings.output_file, ": ", err);
@@ -716,11 +737,21 @@ int main(int argn, char** argv) {
         if (err != ErrorCode::OK) return (int)err;
     }
 
-    if (context.settings.test)
-        run_tests(context);
-    else if (context.settings.build_type == BuildType::LIVE) {
-        Runtime runtime{context, dependency_tree.files};
-        runtime.run();
+
+    switch (context.settings.build_type) {
+        case livecc::BuildType::LIVE: {
+                Runtime runtime{context, dependency_tree.files};
+                runtime.run();
+            }
+            break;
+        case livecc::BuildType::SHARED:
+            break;
+        case livecc::BuildType::TESTS:
+            run_tests(context);
+            break;
+        case livecc::BuildType::STANDALONE:
+        case livecc::BuildType::UNITY:
+            break;
     }
     return 0;
 }

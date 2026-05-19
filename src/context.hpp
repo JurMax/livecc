@@ -20,7 +20,9 @@ namespace livecc {
     enum class BuildType {
         LIVE,         // Build and run as a live application.
         SHARED,       // Build as an optimized shared library.
+        TESTS,        // Build and run the tests.
         STANDALONE,   // Build as a standalone executable.
+        UNITY,        // Build all the files using a single translation unit.
     };
 
     /**
@@ -44,7 +46,6 @@ namespace livecc {
             bool rebuild_with_O0 = false;
             bool verbose = false;
             bool clean = false; // delete the build directory before starting.
-            bool test = false; // make this a build type that just uses the same files.
             bool do_compile = true; // if false, stop after making compile_commands.json
 
             std::string build_command;
