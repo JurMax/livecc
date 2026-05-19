@@ -411,9 +411,25 @@ namespace livecc {
                         link_command << ' ' << file.compiled_path;
                     else {
                         std::ifstream in(file.source_path);
-                        for (std::string str; std::getline(in, str); )
-                            unity_file << str << '\n';
-                        link_command << " -I" << file.source_path.parent_path(); // TODO: make save.
+                        unity_file << "#line 1 " << file.source_path << '\n';
+                        for (std::string str; std::getline(in, str); ) {
+                            std::string_view view{str};
+                            while (true) {
+                                ulong i = view.find("__FILE__");
+                                if (i == view.npos) {
+                                    unity_file << view << '\n';
+                                    break;
+                                }
+                                else {
+                                    unity_file << view.substr(0, i);
+                                    unity_file << file.source_path;
+                                    view = view.substr(i + 8);
+                                    // ("__FILE__", file.source_path.string()) << '\n';
+                                }
+                            }
+                        }
+                        // TODO: remove duplicates here/make not crash
+                        link_command << " -I" << file.source_path.parent_path();
                     }
                     break;
                 case SourceType::OBJECT:
