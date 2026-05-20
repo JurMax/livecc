@@ -162,8 +162,10 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
         || context.settings.build_type == BuildType::UNITY
         || (file.type == SourceType::HEADER && !file.source_time)) {
         file.compiled_time = file.source_time;
-        std::ofstream stream(output_path);
-        return stream.is_open() ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
+        return (file.type.is_pch()
+                    ? fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec)
+                    : std::ofstream(output_path).is_open())
+            ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
     else if (file.type == SourceType::RESOURCE) {
         fs::copy_options options =
