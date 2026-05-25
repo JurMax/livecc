@@ -77,15 +77,19 @@ struct DependencyTreeBuilder {
             if (file == header)
                 continue;
 
+            if (!added_pch && (
+                    (tree.files[header].type == SourceType::C_PCH && tree.files[file].type == SourceType::C_UNIT) ||
+                    (tree.files[header].type ==   SourceType::PCH && tree.files[file].type.imports_modules())
+                )) {
+                added_pch = true;
+                tree.files[file].build_includes.append_range("-include \""sv);
+                tree.files[file].build_includes.append_range(tree.files[header].pch_include());
+                tree.files[file].build_includes.append_range("\" "sv);
+            }
+
             switch (tree.files[header].type) {
                 case SourceType::PCH:
                 case SourceType::C_PCH:
-                    if (!added_pch) {
-                        added_pch = true;
-                        tree.files[file].build_includes.append_range("-include \""sv);
-                        tree.files[file].build_includes.append_range(tree.files[header].pch_include());
-                        tree.files[file].build_includes.append_range("\" "sv);
-                    }
                     break;
                 case SourceType::HEADER_UNIT:
                 case SourceType::SYSTEM_HEADER_UNIT:
