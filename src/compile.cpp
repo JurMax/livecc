@@ -31,7 +31,7 @@ namespace livecc {
                         mark_compiled(files[file]);
                     else
                         info[file].failed = true;
-                    if (!files[file].type.compile_to_timestamp())
+                    if (files[file].type.show_progress())
                         context.log.step_task();
                     return err;
                 });
@@ -75,8 +75,8 @@ namespace livecc {
 using namespace livecc;
 
 ErrorCode livecc::compile_all(Context const& context, std::span<SourceFile> files) {
-    size_t compile_count = std::ranges::count_if(files, [] (SourceFile& f) {
-        return f.need_compile() && !f.type.compile_to_timestamp();
+    int compile_count = (int)std::ranges::count_if(files, [] (SourceFile& f) {
+        return f.need_compile() && f.type.show_progress();
     });
     context.log.set_task("COMPILING", compile_count);
 
@@ -158,7 +158,7 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
     // If we are doing a unity build, use time stamps to only check for changes.
     // If a file is an include but it doesn't exist don't
     // give an error, but also just note down the time.
-    if (file.type.compile_to_timestamp()
+    if (file.compiled_path.extension() == ".timestamp"
         || context.settings.build_type == BuildType::UNITY
         || (file.type == SourceType::HEADER && !file.source_time)) {
         file.compiled_time = file.source_time;

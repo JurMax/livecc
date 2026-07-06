@@ -4,6 +4,8 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 
 ## TODO
 
+- Support livecc.args in subfolders
+
 - Rename SourceFile to just File.
 
 - Support for unity builds for standalone and shared.
@@ -31,3 +33,5 @@ A C/C++ compiler front-end with fully automatic live/hot reload support.
 - Live update should compile using the same system, so its okay if multiple objects get compiled.
 
 - Have standard optimisation modes in settings.
+
+- Dont create compile commands or build if no input

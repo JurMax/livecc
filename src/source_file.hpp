@@ -22,7 +22,9 @@ namespace livecc {
             OBJECT,             // Only linked.
             STATIC_LIBRARY,     // Only linked.
             SHARED_LIBRARY,     // Linked & copied to the output directory
+
             RESOURCE,           // Copied to the output directory
+            UNKNOWN = RESOURCE, // Unknown types are treated as resources.
         };
 
         inline constexpr SourceType(Type type) : type(type) {}
@@ -37,26 +39,32 @@ namespace livecc {
                 default: return false;
             }
         }
-        inline constexpr bool imports_modules() const {
+        inline constexpr bool is_translation_unit() const {
             switch (type) { case UNIT: case HEADER_UNIT: case MODULE: return true; default: return false; }
         }
-        inline constexpr bool uses_modules() const {
-            return imports_modules() || type == Type::SYSTEM_HEADER_UNIT;
+        inline constexpr bool is_precompiled() const {
+            switch (type) { case OBJECT: case STATIC_LIBRARY: case SHARED_LIBRARY: default: return false; }
         }
-
+        inline constexpr bool uses_modules() const {
+            return is_translation_unit() || type == Type::SYSTEM_HEADER_UNIT;
+        }
         inline constexpr bool is_pch() const {
             switch (type) { case PCH: case C_PCH: return true; default: return false; }
         }
 
-        inline constexpr bool compile_to_timestamp() const {
+        inline constexpr bool show_progress() const {
             switch (type) {
-                case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE: case OBJECT: case STATIC_LIBRARY: return true;
-                default: return false;
+                case HEADER: case SYSTEM_HEADER: case BARE_INCLUDE:
+                case OBJECT: case STATIC_LIBRARY:
+                case RESOURCE:
+                    return false;
+                default: return true;
             }
         };
 
+
         /** Get a source type based on a file extension. */
-        static std::optional<SourceType> from_extension(std::string_view const& path);
+        static SourceType from_extension(std::string_view const& path);
 
         Type type;
     };

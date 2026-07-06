@@ -16,32 +16,45 @@ using namespace livecc;
 
 // TODO: use hash/switch.
 
-/*static*/ std::optional<SourceType> SourceType::from_extension(std::string_view const& path) {
+constexpr inline char lower( char c ) {
+    return  (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+constexpr inline size_t hash( std::string_view const& str ) {
+    // Source: http://www.cse.yorku.ca/~oz/hash.html
+    size_t hash = 5381;
+    for (uint i = 0, l = (uint)str.length(); i < l; ++i) /* hash * 33 + c */
+        hash = ((hash << 5) + hash) + (size_t) str[i];
+    return hash;
+}
+
+/*static*/ SourceType SourceType::from_extension(std::string_view const& path) {
     size_t i = path.find_last_of('.');
-    if (i != std::string_view::npos) {
-        SourceType type = HEADER;
-        if (++i == path.size()) return {};
-        switch (path[i]) {
-        // c, cc, cpp, c++
-            case 'c': case 'C':
-                if (++i == path.size()) return {C_UNIT};
-                type = UNIT;
-                break;
-        // h, hh, hpp, h++
-            case 'h': case 'H':
-                if (++i == path.size()) return {HEADER};
-                type = HEADER;
-                break;
-        // a
-            case 'a': if (path.substr(i) ==   "a") return {STATIC_LIBRARY}; else return {};
-            case 'A': if (path.substr(i) ==   "A") return {STATIC_LIBRARY}; else return {};
-        // // dll
-        //     case 'd': if (path.substr(i) == "dll") return {SHARED_LIBRARY}; else return {};
-        //     case 'D': if (path.substr(i) == "DLL") return {SHARED_LIBRARY}; else return {};
-        // so
-            case 's': if (path.substr(i) ==  "so") return {SHARED_LIBRARY}; else return {};
-            case 'S': if (path.substr(i) ==  "SO") return {SHARED_LIBRARY}; else return {};
-        /* .so.0.1 */
+    std::string_view ext = path.substr(i + 1);
+    switch (hash(ext)) {
+        case hash("c"): return C_UNIT;
+        case hash("cc"): case hash("cpp"): case hash("c++"): case hash("cxx"): return UNIT;
+        case hash("h"): return HEADER;
+        case hash("hh"): case hash("hpp"): case hash("h++"): case hash("hxx"): return HEADER;
+        case hash("a"): return STATIC_LIBRARY;
+        case hash("so"): case hash("dll"): return SHARED_LIBRARY;
+        case hash("o"): case hash("obj"): return OBJECT;
+
+        case hash("png"): case hash("jpg"): case hash("jpeg"):
+        case hash("wav"): case hash("mp3"): case hash("ogg"):
+        case hash("mp4"): case hash("mkv"): case hash("gif"):
+        case hash("txt"):
+        case hash("dat"):
+        case hash("json"):
+        case hash("dev"): case hash("level"): case hash("cutscene"): case hash("world"):
+        case hash("scene"):
+        case hash("game"):
+            return RESOURCE;
+    }
+
+    // Check for numbered shared libraries.
+    if (ext.length() != 0) {
+        switch (ext[0]) {
             case '0': case '1': case '2': case '3': case '4':
             case '5': case '6': case '7': case '8': case '9':
                 for (size_t i = path.size(); i-- > 0;)
@@ -51,36 +64,14 @@ using namespace livecc;
                             break;
                         case 'o':
                             if (i > 2 && path[--i] == 's' && path[--i] == '.')
-                                return {SHARED_LIBRARY};
-                            return {};
-                        default: return {};
+                                return SHARED_LIBRARY;
+                            return UNKNOWN;
+                        default: return UNKNOWN;
                     }
-                break;
-        // o, ob, obj
-            case 'o': case 'O':
-                if (++i == path.size()) return {OBJECT};
-                if (path[i] == 'b' || path[i] == 'B') {
-                    if (++i == path.size()) return {OBJECT};
-                    if (path[i] == 'j' || path[i] == 'J')
-                        if (++i == path.size()) return {OBJECT};
-                }
-                return {};
-            default: return {};
-        }
-
-        // Parse the rest of header or source file extensions.
-        switch (path[i]) {
-            default: break;
-            case 'h': case 'H': if (++i == path.size()) return {HEADER}; break;
-            case 'c': case 'C': if (++i == path.size()) return   {type}; break;
-            case '+': case 'x': case 'X': case 'p': case 'P':
-                char letter = path[i];
-                if (++i == path.size() || path[i] == letter)
-                    return {type};
                 break;
         }
     }
-    return {};
+    return UNKNOWN;
 }
 
 
@@ -245,7 +236,10 @@ struct Parser {
     bool try_add_include(Context::Settings const& settings, const fs::path& path) {
         std::error_code err;
         if (fs::exists(path, err) && !err) {
-            SourceType::Type type = SourceType::from_extension(path.native()).value_or(SourceType::BARE_INCLUDE);
+            SourceType::Type type = SourceType::from_extension(path.native());
+            if (type == SourceType::UNKNOWN)
+                type = SourceType::BARE_INCLUDE;
+
             switch (type) {
                 case SourceType::HEADER:
                     if (settings.use_header_units)
@@ -263,45 +257,53 @@ struct Parser {
 };
 
 
-SourceFile::SourceFile(Context::Settings const& settings, const fs::path& path, SourceType type)
-    : type(type), source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT ? normalise_path(settings, path) : path) {
+SourceFile::SourceFile(Context::Settings const& settings, const fs::path& input_path, SourceType type) :
+    type(type),
+    source_path(type != SourceType::SYSTEM_HEADER && type != SourceType::SYSTEM_HEADER_UNIT
+        ? normalise_path(settings, input_path) : input_path) {
 
-    if (type == SourceType::SYSTEM_HEADER || type == SourceType::SYSTEM_HEADER_UNIT)
-        compiled_path = settings.output_dir / "system" / source_path;
-    else {
+    const auto get_output_path = [&] (char const* extension) {
         const char* path = source_path.c_str();
         if (source_path.is_absolute())
             path += source_path.root_path().native().size();
-        compiled_path = settings.output_dir / path;
-    }
+        auto p = settings.output_dir / path;
+        p += extension;
+        return p;
+    };
 
     switch (type) {
         case SourceType::UNIT:
         case SourceType::C_UNIT:
         case SourceType::MODULE:
-            compiled_path += ".o";
+            compiled_path = get_output_path(".o");
             break;
         case SourceType::HEADER_UNIT:
         case SourceType::SYSTEM_HEADER_UNIT:
+            compiled_path = settings.output_dir / "system" / source_path;
             compiled_path += ".pcm";
             break;
         case SourceType::PCH:
         case SourceType::C_PCH:
-            compiled_path += ".gch";
+            compiled_path = get_output_path(".gch");
             break;
         case SourceType::HEADER:
         case SourceType::SYSTEM_HEADER:
         case SourceType::BARE_INCLUDE:
         case SourceType::OBJECT:
         case SourceType::STATIC_LIBRARY:
-            compiled_path += ".timestamp";
+            compiled_path = get_output_path(".timestamp");
             break;
         case SourceType::SHARED_LIBRARY:
             // Shared library gets updated later to match the libraries SONAME.
             compiled_path = settings.build_dir / source_path.filename();
             break;
         case SourceType::RESOURCE:
-            compiled_path = settings.build_dir / source_path.filename();
+            if (settings.build_type == BuildType::STANDALONE)
+                compiled_path = source_path.is_absolute()
+                    ? settings.build_dir / source_path.filename()
+                    : settings.build_dir / source_path;
+            else
+                compiled_path = get_output_path(".timestamp");
             break;
     }
 }
@@ -419,7 +421,7 @@ bool SourceFile::has_source_changed() {
     }
 }
 std::string SourceFile::get_build_command(Context::Settings const& settings, const fs::path& output_path, bool live_recompile) const {
-    if (type.compile_to_timestamp())
+    if (output_path.extension() == ".timestamp")
         return std::format("touch \"{}\"", output_path.native());
     else if (type == SourceType::SHARED_LIBRARY)
         return std::format("cp -f \"{}\" \"{}\"", source_path.native(), output_path.native());

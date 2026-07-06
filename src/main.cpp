@@ -21,6 +21,7 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <fstream>
 #include <cstdio>
@@ -40,6 +41,15 @@
 // https://maskray.me/blog/2021-09-19-all-about-procedure-linkage-table
 // https://www.qnx.com/developers/docs/7.0.0/index.html#com.qnx.doc.neutrino.prog/topic/devel_Lazy_binding.html !
 
+
+std::string_view trim( std::string_view view ) {
+    while (!view.empty() && isspace(view[view.length() - 1]))
+        view = view.substr(0, view.length() - 1);
+    while (!view.empty() && isspace(view[0]))
+        view = view.substr(1);
+    return view;
+}
+
 namespace livecc {
     namespace fs = std::filesystem;
     using namespace std::literals;
@@ -54,10 +64,31 @@ namespace livecc {
      */
     ErrorCode add_source_directory(std::vector<InputFile>& files, std::string_view const& dir_path) {
         std::error_code err;
-        // TODO only add .o files if there are no source files in the directory.
-        for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err))
-            if (auto type = SourceType::from_extension(dir_entry.path().native()))
-                files.emplace_back(dir_entry.path(), *type);
+        std::vector<std::pair<std::string, SourceType>> entries;
+        bool has_unit = false;
+        bool has_object = false;
+        for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err)) {
+            if (!dir_entry.is_directory()) {
+                std::string path = dir_entry.path().native();
+                SourceType type = SourceType::from_extension(path);
+                if (type.is_translation_unit()) has_unit = true;
+                if (type.is_precompiled()) has_object = true;
+                entries.emplace_back(std::move(path), type);
+            }
+        }
+
+        if (has_unit) {
+            for (auto [path, type] : entries)
+                if (type.is_translation_unit() || type.is_include())
+                    files.emplace_back(path, type);
+        }
+        else if (has_object) {
+            for (auto [path, type] : entries)
+                if (type.is_precompiled() || type.is_include())
+                    files.emplace_back(path, type);
+        }
+        else for (auto [path, type] : entries)
+            files.emplace_back(path, type);
         return !err ? ErrorCode::OK : ErrorCode::OPEN_FAILED;
     }
 
@@ -73,6 +104,8 @@ namespace livecc {
             settings.compiler = env_compiler;
         else if (const char* env_compiler = std::getenv("CC"))
             settings.compiler = env_compiler;
+        settings.compiler = trim(settings.compiler);
+
         if (settings.compiler.contains("gcc")
             || (settings.compiler.contains("g++")
                 && !settings.compiler.contains("clang++")))
@@ -145,10 +178,12 @@ namespace livecc {
             else {
                 switch (next_arg_type) {
                     case INPUT:
-                        if (auto type = SourceType::from_extension(arg))
-                            files.emplace_back(arg, *type);
-                        else if (add_source_directory(files, arg) != ErrorCode::OK)
-                            context.log.error("unknown input supplied: ", arg);
+                        if (!arg.contains(".")) {
+                            if (add_source_directory(files, arg) != ErrorCode::OK)
+                                context.log.error("unknown input supplied: ", arg);
+                        }
+                        else
+                            files.emplace_back(arg, SourceType::from_extension(arg));
                         break;
                     case OUTPUT:   settings.output_name = arg; break;
                     case PCH:

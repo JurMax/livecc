@@ -77,9 +77,10 @@ struct DependencyTreeBuilder {
             if (file == header)
                 continue;
 
+            // Add PCH
             if (!added_pch && (
                     (tree.files[header].type == SourceType::C_PCH && tree.files[file].type == SourceType::C_UNIT) ||
-                    (tree.files[header].type ==   SourceType::PCH && tree.files[file].type.imports_modules())
+                    (tree.files[header].type ==   SourceType::PCH && tree.files[file].type.is_translation_unit())
                 )) {
                 added_pch = true;
                 tree.files[file].build_includes.append_range("-include \""sv);
@@ -88,9 +89,6 @@ struct DependencyTreeBuilder {
             }
 
             switch (tree.files[header].type) {
-                case SourceType::PCH:
-                case SourceType::C_PCH:
-                    break;
                 case SourceType::HEADER_UNIT:
                 case SourceType::SYSTEM_HEADER_UNIT:
                     if (context.settings.compiler_type == Context::Settings::CLANG && tree.files[header].source_time) {
@@ -139,7 +137,7 @@ ErrorCode DependencyTree::build(Context const& context, std::span<const InputFil
         // Make all files depend on the PCH
         if (files[file].type == SourceType::PCH)
             for (SourceFile& other : files)
-                if (other.type.imports_modules())
+                if (other.type.is_translation_unit())
                     other.dependencies.emplace_back(files[file].source_path, SourceType::PCH);
         if (files[file].type == SourceType::C_PCH)
             for (SourceFile& other : files)
