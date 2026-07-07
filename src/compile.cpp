@@ -179,12 +179,17 @@ ErrorCode livecc::compile_file(Context const& context, SourceFile& file, fs::pat
 
     // Create PCH file.
     if (file.type.is_pch()) {
-        fs::path live_callback_header = context.settings.live_callback_header();
-        if (file.source_path != live_callback_header) {
-            build_command += " -include\"";
-            build_command += live_callback_header.c_str();
-            build_command += '"';
+
+        // Make sure the livecc callback header is included everywhere
+        if (context.settings.build_type == BuildType::LIVE) {
+            fs::path live_callback_header = context.settings.live_callback_header();
+            if (file.source_path != live_callback_header) {
+                build_command += " -include\"";
+                build_command += live_callback_header.c_str();
+                build_command += '"';
+            }
         }
+
         fs::copy_file(file.source_path, fs::path{file.pch_include()}, fs::copy_options::overwrite_existing, ec);
     }
     else if (context.settings.compiler_type == Context::Settings::GCC && file.type.uses_modules()) {
