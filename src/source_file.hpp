@@ -25,6 +25,7 @@ namespace livecc {
 
             RESOURCE,           // Copied to the output directory
             UNKNOWN = RESOURCE, // Unknown types are treated as resources.
+            NONE = RESOURCE,    // No extension is given
         };
 
         inline constexpr SourceType(Type type) : type(type) {}
@@ -64,7 +65,7 @@ namespace livecc {
 
 
         /** Get a source type based on a file extension. */
-        static SourceType from_extension(std::string_view const& path);
+        static SourceType from_extension(std::string_view path);
 
         Type type;
     };

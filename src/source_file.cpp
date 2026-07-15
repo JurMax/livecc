@@ -28,8 +28,12 @@ constexpr inline size_t hash( std::string_view const& str ) {
     return hash;
 }
 
-/*static*/ SourceType SourceType::from_extension(std::string_view const& path) {
+/*static*/ SourceType SourceType::from_extension(std::string_view path) {
+    path = path.substr(path.find_last_of('/') + 1);
     size_t i = path.find_last_of('.');
+    if (i == std::string_view::npos)
+        return NONE;
+
     std::string_view ext = path.substr(i + 1);
     switch (hash(ext)) {
         case hash("c"): return C_UNIT;
