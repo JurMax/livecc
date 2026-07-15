@@ -67,12 +67,12 @@ namespace livecc {
         std::vector<std::pair<std::string, SourceType>> entries;
         bool has_unit = false;
         bool has_object = false;
-        std::cout << dir_path << std::endl;
+        // std::cout << dir_path << std::endl;
         for (const fs::directory_entry& dir_entry : fs::recursive_directory_iterator(dir_path, err)) {
             if (!dir_entry.is_directory()) {
                 std::string path = dir_entry.path().native();
                 SourceType type = SourceType::from_extension(path);
-                std::cout << "    " << path << " " << (int)type << std::endl;
+                // std::cout << "    " << path << " " << (int)type << std::endl;
                 if (type.is_translation_unit()) has_unit = true;
                 if (type.is_precompiled()) has_object = true;
                 entries.emplace_back(std::move(path), type);
